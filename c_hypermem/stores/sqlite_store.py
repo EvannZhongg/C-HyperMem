@@ -9,10 +9,10 @@ from c_hypermem.errors import StoreError
 from c_hypermem.schema import (
     EntityAliasIndexEntry,
     FactPropertyIndexEntry,
+    HyperEdge,
     LocalNodeGraph,
-    SharedNode,
+    MemoryNode,
     TimeBundle,
-    ViewEdge,
 )
 from c_hypermem.utils.ids import make_member_signature
 from c_hypermem.utils.time import utc_now_iso
@@ -30,8 +30,8 @@ class SQLiteStore:
         with self.conn:
             for table in [
                 "triples",
-                "view_edge_members",
-                "view_edges",
+                "hyper_edge_members",
+                "hyper_edges",
                 "nodes",
                 "fact_property_index",
                 "entity_alias_index",
@@ -39,7 +39,7 @@ class SQLiteStore:
             ]:
                 self.conn.execute(f"DELETE FROM {table} WHERE namespace = ?", (namespace,))
 
-    def upsert_nodes(self, nodes: list[SharedNode]) -> None:
+    def upsert_nodes(self, nodes: list[MemoryNode]) -> None:
         with self.conn:
             for node in nodes:
                 self.conn.execute(
@@ -47,9 +47,10 @@ class SQLiteStore:
                     INSERT INTO nodes (
                         namespace, node_id, node_type, status, superseded_by,
                         invalidated_by, status_reason, status_updated_at, content, summary,
-                        time_json, local_graph_json, metadata_json, dedupe_key
+                        attributes_json, absolute_time_json, relative_time_json,
+                        local_graph_json, metadata_json, dedupe_key
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(namespace, node_id) DO UPDATE SET
                         node_type = excluded.node_type,
                         status = excluded.status,
@@ -59,7 +60,9 @@ class SQLiteStore:
                         status_updated_at = excluded.status_updated_at,
                         content = excluded.content,
                         summary = excluded.summary,
-                        time_json = excluded.time_json,
+                        attributes_json = excluded.attributes_json,
+                        absolute_time_json = excluded.absolute_time_json,
+                        relative_time_json = excluded.relative_time_json,
                         local_graph_json = excluded.local_graph_json,
                         metadata_json = excluded.metadata_json,
                         dedupe_key = excluded.dedupe_key
@@ -75,7 +78,14 @@ class SQLiteStore:
                         node.status_updated_at,
                         node.content,
                         node.summary,
-                        _to_json(node.time),
+                        _to_json(node.attributes),
+                        _to_json(node.time.world),
+                        _to_json(
+                            {
+                                "lifecycle": node.time.lifecycle.model_dump(mode="json"),
+                                "activation": node.time.activation.model_dump(mode="json"),
+                            }
+                        ),
                         _to_json(node.local_graph),
                         _to_json(node.metadata),
                         node.dedupe_key,
@@ -90,9 +100,9 @@ class SQLiteStore:
                         """
                         INSERT INTO triples (
                             namespace, triple_id, owner_node_id, subject, predicate, object,
-                            status, superseded_by, invalidated_by, metadata_json
+                            status, superseded_by, invalidated_by, qualifiers_json, metadata_json
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(namespace, triple_id) DO UPDATE SET
                             owner_node_id = excluded.owner_node_id,
                             subject = excluded.subject,
@@ -101,6 +111,7 @@ class SQLiteStore:
                             status = excluded.status,
                             superseded_by = excluded.superseded_by,
                             invalidated_by = excluded.invalidated_by,
+                            qualifiers_json = excluded.qualifiers_json,
                             metadata_json = excluded.metadata_json
                         """,
                         (
@@ -114,52 +125,60 @@ class SQLiteStore:
                             triple.superseded_by,
                             triple.invalidated_by,
                             _to_json(triple.qualifiers),
+                            _to_json({}),
                         ),
                     )
 
-    def upsert_edges(self, edges: list[ViewEdge]) -> None:
+    def upsert_edges(self, edges: list[HyperEdge]) -> None:
         with self.conn:
             for edge in edges:
                 if not edge.member_signature:
                     edge.member_signature = make_member_signature(edge.node_ids, edge.roles)
                 self.conn.execute(
                     """
-                    INSERT INTO view_edges (
-                        namespace, edge_id, view, relation, edge_key, member_policy,
-                        member_signature, member_version, time_json, metadata_json
+                    INSERT INTO hyper_edges (
+                        namespace, edge_id, edge_type, relation, edge_key, member_policy,
+                        member_signature, member_version, absolute_time_json, relative_time_json, metadata_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(namespace, edge_id) DO UPDATE SET
-                        view = excluded.view,
+                        edge_type = excluded.edge_type,
                         relation = excluded.relation,
                         edge_key = excluded.edge_key,
                         member_policy = excluded.member_policy,
                         member_signature = excluded.member_signature,
                         member_version = excluded.member_version,
-                        time_json = excluded.time_json,
+                        absolute_time_json = excluded.absolute_time_json,
+                        relative_time_json = excluded.relative_time_json,
                         metadata_json = excluded.metadata_json
                     """,
                     (
                         edge.namespace,
                         edge.id,
-                        edge.view,
+                        edge.edge_type,
                         edge.relation,
                         edge.edge_key,
                         edge.member_policy,
                         edge.member_signature,
                         edge.member_version,
-                        _to_json(edge.time),
+                        _to_json(edge.time.world),
+                        _to_json(
+                            {
+                                "lifecycle": edge.time.lifecycle.model_dump(mode="json"),
+                                "activation": edge.time.activation.model_dump(mode="json"),
+                            }
+                        ),
                         _to_json(edge.metadata),
                     ),
                 )
                 self.conn.execute(
-                    "DELETE FROM view_edge_members WHERE namespace = ? AND edge_id = ?",
+                    "DELETE FROM hyper_edge_members WHERE namespace = ? AND edge_id = ?",
                     (edge.namespace, edge.id),
                 )
                 for node_id in edge.node_ids:
                     self.conn.execute(
                         """
-                        INSERT INTO view_edge_members (namespace, edge_id, node_id, role, weight)
+                        INSERT INTO hyper_edge_members (namespace, edge_id, node_id, role, weight)
                         VALUES (?, ?, ?, ?, ?)
                         """,
                         (
@@ -289,21 +308,21 @@ class SQLiteStore:
             for row in rows
         ]
 
-    def list_nodes(self, namespace: str) -> list[SharedNode]:
+    def list_nodes(self, namespace: str) -> list[MemoryNode]:
         rows = self.conn.execute(
             "SELECT * FROM nodes WHERE namespace = ? ORDER BY rowid",
             (namespace,),
         ).fetchall()
         return [_node_from_row(row) for row in rows]
 
-    def list_edges(self, namespace: str) -> list[ViewEdge]:
+    def list_edges(self, namespace: str) -> list[HyperEdge]:
         rows = self.conn.execute(
-            "SELECT * FROM view_edges WHERE namespace = ? ORDER BY rowid",
+            "SELECT * FROM hyper_edges WHERE namespace = ? ORDER BY rowid",
             (namespace,),
         ).fetchall()
         return [_edge_from_row(row, _edge_members(self.conn, row["namespace"], row["edge_id"])) for row in rows]
 
-    def get_nodes(self, namespace: str, node_ids: list[str]) -> list[SharedNode]:
+    def get_nodes(self, namespace: str, node_ids: list[str]) -> list[MemoryNode]:
         if not node_ids:
             return []
         placeholders = ",".join("?" for _ in node_ids)
@@ -314,15 +333,15 @@ class SQLiteStore:
         by_id = {_node_from_row(row).id: _node_from_row(row) for row in rows}
         return [by_id[node_id] for node_id in node_ids if node_id in by_id]
 
-    def get_incident_edges(self, namespace: str, node_ids: list[str]) -> list[ViewEdge]:
+    def get_incident_edges(self, namespace: str, node_ids: list[str]) -> list[HyperEdge]:
         if not node_ids:
             return []
         placeholders = ",".join("?" for _ in node_ids)
         rows = self.conn.execute(
             f"""
             SELECT DISTINCT ve.*
-            FROM view_edges ve
-            JOIN view_edge_members vem
+            FROM hyper_edges ve
+            JOIN hyper_edge_members vem
               ON ve.namespace = vem.namespace AND ve.edge_id = vem.edge_id
             WHERE vem.namespace = ? AND vem.node_id IN ({placeholders})
             ORDER BY ve.rowid
@@ -335,7 +354,7 @@ class SQLiteStore:
         result: dict[str, int] = {}
         for key, table in {
             "nodes": "nodes",
-            "edges": "view_edges",
+            "hyper_edges": "hyper_edges",
             "triples": "triples",
             "fact_properties": "fact_property_index",
             "entity_aliases": "entity_alias_index",
@@ -379,7 +398,9 @@ class SQLiteStore:
                         status_updated_at TEXT,
                         content TEXT NOT NULL,
                         summary TEXT NOT NULL DEFAULT '',
-                        time_json TEXT NOT NULL,
+                        attributes_json TEXT NOT NULL,
+                        absolute_time_json TEXT NOT NULL,
+                        relative_time_json TEXT NOT NULL,
                         local_graph_json TEXT NOT NULL,
                         metadata_json TEXT NOT NULL,
                         dedupe_key TEXT,
@@ -392,24 +413,25 @@ class SQLiteStore:
                     CREATE INDEX IF NOT EXISTS idx_nodes_namespace_dedupe
                         ON nodes(namespace, dedupe_key);
 
-                    CREATE TABLE IF NOT EXISTS view_edges (
+                    CREATE TABLE IF NOT EXISTS hyper_edges (
                         namespace TEXT NOT NULL,
                         edge_id TEXT NOT NULL,
-                        view TEXT NOT NULL,
+                        edge_type TEXT NOT NULL,
                         relation TEXT NOT NULL,
                         edge_key TEXT NOT NULL DEFAULT '',
                         member_policy TEXT NOT NULL DEFAULT 'immutable',
                         member_signature TEXT NOT NULL DEFAULT '',
                         member_version INTEGER NOT NULL DEFAULT 1,
-                        time_json TEXT NOT NULL,
+                        absolute_time_json TEXT NOT NULL,
+                        relative_time_json TEXT NOT NULL,
                         metadata_json TEXT NOT NULL,
                         PRIMARY KEY (namespace, edge_id)
                     );
 
-                    CREATE INDEX IF NOT EXISTS idx_edges_namespace_view
-                        ON view_edges(namespace, view);
+                    CREATE INDEX IF NOT EXISTS idx_hyper_edges_namespace_type
+                        ON hyper_edges(namespace, edge_type);
 
-                    CREATE TABLE IF NOT EXISTS view_edge_members (
+                    CREATE TABLE IF NOT EXISTS hyper_edge_members (
                         namespace TEXT NOT NULL,
                         edge_id TEXT NOT NULL,
                         node_id TEXT NOT NULL,
@@ -417,8 +439,8 @@ class SQLiteStore:
                         weight REAL NOT NULL DEFAULT 1.0
                     );
 
-                    CREATE INDEX IF NOT EXISTS idx_edge_members_node
-                        ON view_edge_members(namespace, node_id);
+                    CREATE INDEX IF NOT EXISTS idx_hyper_edge_members_node
+                        ON hyper_edge_members(namespace, node_id);
 
                     CREATE TABLE IF NOT EXISTS triples (
                         namespace TEXT NOT NULL,
@@ -430,6 +452,7 @@ class SQLiteStore:
                         status TEXT NOT NULL DEFAULT 'active',
                         superseded_by TEXT,
                         invalidated_by TEXT,
+                        qualifiers_json TEXT NOT NULL,
                         metadata_json TEXT NOT NULL,
                         PRIMARY KEY (namespace, triple_id)
                     );
@@ -496,8 +519,8 @@ def _from_json(value: str, default: Any) -> Any:
     return json.loads(value)
 
 
-def _node_from_row(row: sqlite3.Row) -> SharedNode:
-    return SharedNode(
+def _node_from_row(row: sqlite3.Row) -> MemoryNode:
+    return MemoryNode(
         id=row["node_id"],
         namespace=row["namespace"],
         type=row["node_type"],
@@ -508,21 +531,22 @@ def _node_from_row(row: sqlite3.Row) -> SharedNode:
         status_updated_at=row["status_updated_at"],
         content=row["content"],
         summary=row["summary"],
-        time=TimeBundle.model_validate(_from_json(row["time_json"], {})),
+        attributes=_from_json(row["attributes_json"], {}),
+        time=_time_from_columns(row["absolute_time_json"], row["relative_time_json"]),
         local_graph=LocalNodeGraph.model_validate(_from_json(row["local_graph_json"], {})),
         metadata=_from_json(row["metadata_json"], {}),
         dedupe_key=row["dedupe_key"],
     )
 
 
-def _edge_from_row(row: sqlite3.Row, members: list[sqlite3.Row]) -> ViewEdge:
+def _edge_from_row(row: sqlite3.Row, members: list[sqlite3.Row]) -> HyperEdge:
     node_ids = [member["node_id"] for member in members]
     roles = {member["node_id"]: member["role"] for member in members if member["role"] is not None}
     weights = {member["node_id"]: float(member["weight"]) for member in members}
-    return ViewEdge(
+    return HyperEdge(
         id=row["edge_id"],
         namespace=row["namespace"],
-        view=row["view"],
+        edge_type=row["edge_type"],
         relation=row["relation"],
         edge_key=row["edge_key"],
         member_policy=row["member_policy"],
@@ -531,7 +555,7 @@ def _edge_from_row(row: sqlite3.Row, members: list[sqlite3.Row]) -> ViewEdge:
         node_ids=node_ids,
         roles=roles,
         weights=weights,
-        time=TimeBundle.model_validate(_from_json(row["time_json"], {})),
+        time=_time_from_columns(row["absolute_time_json"], row["relative_time_json"]),
         metadata=_from_json(row["metadata_json"], {}),
     )
 
@@ -540,9 +564,18 @@ def _edge_members(conn: sqlite3.Connection, namespace: str, edge_id: str) -> lis
     return conn.execute(
         """
         SELECT node_id, role, weight
-        FROM view_edge_members
+        FROM hyper_edge_members
         WHERE namespace = ? AND edge_id = ?
         ORDER BY rowid
         """,
         (namespace, edge_id),
     ).fetchall()
+
+
+def _time_from_columns(absolute_time_json: str, relative_time_json: str) -> TimeBundle:
+    time = TimeBundle()
+    time.world = time.world.model_validate(_from_json(absolute_time_json, {}))
+    relative_time = _from_json(relative_time_json, {})
+    time.lifecycle = time.lifecycle.model_validate(relative_time.get("lifecycle", {}))
+    time.activation = time.activation.model_validate(relative_time.get("activation", {}))
+    return time

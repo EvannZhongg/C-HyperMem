@@ -6,7 +6,7 @@ from typing import Any
 from c_hypermem.config import MemoryConfig
 from c_hypermem.pipeline import IngestionPipeline
 from c_hypermem.pipeline.extraction import MemoryExtractor
-from c_hypermem.pipeline.view_projection import ViewProjector
+from c_hypermem.pipeline.hyperedge_builder import HyperEdgeBuilder
 from c_hypermem.retrieval import Retriever
 from c_hypermem.schema import AgentInteraction, MemoryImportBatch, Message
 from c_hypermem.stores import SQLiteStore
@@ -19,11 +19,11 @@ class Memory:
         config: MemoryConfig,
         *,
         extractor: MemoryExtractor | None = None,
-        view_projector: ViewProjector | None = None,
+        hyperedge_builder: HyperEdgeBuilder | None = None,
     ) -> None:
         self.config = config
         self.store = SQLiteStore(Path(config.storage.path))
-        self.ingestion = IngestionPipeline(config, extractor=extractor, view_projector=view_projector)
+        self.ingestion = IngestionPipeline(config, extractor=extractor, hyperedge_builder=hyperedge_builder)
         self.retriever = Retriever(self.store, config.retrieval)
         self._turn_counters: dict[str, int] = {}
 
@@ -33,9 +33,9 @@ class Memory:
         config: str | Path | dict[str, Any] | MemoryConfig | None = None,
         *,
         extractor: MemoryExtractor | None = None,
-        view_projector: ViewProjector | None = None,
+        hyperedge_builder: HyperEdgeBuilder | None = None,
     ) -> "Memory":
-        return cls(MemoryConfig.load(config), extractor=extractor, view_projector=view_projector)
+        return cls(MemoryConfig.load(config), extractor=extractor, hyperedge_builder=hyperedge_builder)
 
     def reset(self, namespace: str = "default") -> None:
         self.store.reset_namespace(namespace)

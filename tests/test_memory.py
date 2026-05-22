@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
+import yaml
 
 from c_hypermem import Memory
 from c_hypermem.config import MemoryConfig
 from c_hypermem.errors import IngestionNotConfiguredError
-from c_hypermem.schema import IngestionOutput, LocalNodeGraph, SharedNode, ViewEdge
+from c_hypermem.schema import HyperEdge, IngestionOutput, LocalNodeGraph, MemoryNode
 from c_hypermem.utils.ids import make_edge_id, make_node_id
 from c_hypermem.utils.time import make_time_bundle
 
@@ -49,29 +51,32 @@ def test_add_uses_explicit_extractor_only(tmp_path):
 
     assert extractor.called
     assert stats["nodes"] == 1
-    assert stats["edges"] == 1
+    assert stats["hyper_edges"] == 1
     assert stats["triples"] == 0
     assert results
     assert "Alice prefers morning interviews" in results[0]["content"]
-    assert results[0]["metadata"]["views"] == ["preference_profile_view"]
+    assert results[0]["metadata"]["edge_types"] == ["state"]
 
 
-def test_sqlite_view_edges_do_not_store_member_json(tmp_path):
+def test_sqlite_hyper_edges_use_member_table(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     memory = Memory.from_config({"storage": {"path": str(db_path)}})
     memory.close()
 
     with sqlite3.connect(db_path) as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(view_edges)").fetchall()}
+        edge_columns = {row[1] for row in conn.execute("PRAGMA table_info(hyper_edges)").fetchall()}
+        member_columns = {row[1] for row in conn.execute("PRAGMA table_info(hyper_edge_members)").fetchall()}
 
-    assert "node_ids_json" not in columns
-    assert "roles_json" not in columns
-    assert "weights_json" not in columns
-    assert {"edge_key", "member_policy", "member_signature", "member_version"} <= columns
+    assert "node_ids_json" not in edge_columns
+    assert "roles_json" not in edge_columns
+    assert "weights_json" not in edge_columns
+    assert {"edge_key", "member_policy", "member_signature", "member_version"} <= edge_columns
+    assert {"edge_id", "node_id", "role", "weight"} <= member_columns
 
 
-def test_default_config_includes_model_config_file():
+def test_default_config_includes_split_config_files():
     config = MemoryConfig.load("configs/default.yaml")
+    default_raw = yaml.safe_load(Path("configs/default.yaml").read_text(encoding="utf-8"))
 
     assert config.llm is not None
     assert config.llm.provider == "openai_compatible"
@@ -83,6 +88,11 @@ def test_default_config_includes_model_config_file():
     assert config.embedding.model == "${CHYPERMEM_EMBEDDING_MODEL}"
     assert config.embedding.base_url == "${CHYPERMEM_EMBEDDING_BASE_URL}"
     assert config.embedding.api_key == "${CHYPERMEM_EMBEDDING_API_KEY}"
+    assert default_raw["include"] == ["models.yaml", "node_types.yaml"]
+    assert "node_types" not in default_raw
+    assert config.extraction.prompt == "extraction/memory_extraction.md"
+    assert "entity" in config.node_types.types
+    assert config.hyperedges.basic_edge_types == ["evidence", "state", "correction"]
 
 
 class StaticExtractor:
@@ -91,7 +101,7 @@ class StaticExtractor:
 
     def extract(self, messages, context):
         self.called = True
-        node = SharedNode(
+        node = MemoryNode(
             id=make_node_id(context.namespace, "preference", "alice-morning-interviews"),
             namespace=context.namespace,
             type="preference",
@@ -109,16 +119,16 @@ class StaticExtractor:
             local_graph=LocalNodeGraph(),
             dedupe_key="preference:alice-morning-interviews",
         )
-        edge = ViewEdge(
+        edge = HyperEdge(
             id=make_edge_id(
                 context.namespace,
-                "preference_profile_view",
-                "profile_evidence",
+                "state",
+                "describes_entity_state",
                 "profile:alice_preferences",
             ),
             namespace=context.namespace,
-            view="preference_profile_view",
-            relation="profile_evidence",
+            edge_type="state",
+            relation="describes_entity_state",
             edge_key="profile:alice_preferences",
             member_policy="appendable",
             node_ids=[node.id],

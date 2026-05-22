@@ -1,23 +1,13 @@
 from __future__ import annotations
 
-from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-NodeType = Literal["turn", "event", "fact", "entity", "state", "preference", "task"]
+NodeType = str
 MemoryStatus = Literal["active", "retired", "invalidated", "uncertain"]
 MemberPolicy = Literal["immutable", "appendable", "versioned"]
-
-
-class MemoryView(str, Enum):
-    PROVENANCE = "provenance_view"
-    ENTITY_STATE = "entity_state_view"
-    TEMPORAL = "temporal_view"
-    TOPIC_OR_INTENT = "topic_or_intent_view"
-    PREFERENCE_PROFILE = "preference_profile_view"
-    TASK_OR_PLAN = "task_or_plan_view"
 
 
 class ValidTime(BaseModel):
@@ -70,7 +60,7 @@ class LocalNodeGraph(BaseModel):
     roles: dict[str, str] = Field(default_factory=dict)
 
 
-class SharedNode(BaseModel):
+class MemoryNode(BaseModel):
     id: str
     namespace: str
     type: NodeType
@@ -81,16 +71,17 @@ class SharedNode(BaseModel):
     status_updated_at: str | None = None
     content: str
     summary: str = ""
+    attributes: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     time: TimeBundle = Field(default_factory=TimeBundle)
     local_graph: LocalNodeGraph = Field(default_factory=LocalNodeGraph)
     dedupe_key: str | None = None
 
 
-class ViewEdge(BaseModel):
+class HyperEdge(BaseModel):
     id: str
     namespace: str
-    view: str
+    edge_type: str
     relation: str
     edge_key: str
     member_policy: MemberPolicy = "immutable"
@@ -177,8 +168,8 @@ class MemoryImportBatch(BaseModel):
 
 
 class IngestionOutput(BaseModel):
-    nodes: list[SharedNode] = Field(default_factory=list)
-    edges: list[ViewEdge] = Field(default_factory=list)
+    nodes: list[MemoryNode] = Field(default_factory=list)
+    edges: list[HyperEdge] = Field(default_factory=list)
 
 
 class SearchResult(BaseModel):
@@ -186,3 +177,4 @@ class SearchResult(BaseModel):
     content: str
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
+

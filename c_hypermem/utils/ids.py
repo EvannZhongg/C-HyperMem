@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any
 
+from c_hypermem.utils.hashing import stable_hash
 from c_hypermem.utils.text import compact_key, normalize_text
-
-
-def stable_hash(*parts: Any, length: int = 16) -> str:
-    payload = json.dumps(_canonical(parts), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:length]
 
 
 def make_node_id(namespace: str, node_type: str, stable_key: str) -> str:
@@ -29,12 +23,12 @@ def make_entity_id(
 
 def make_edge_id(
     namespace: str,
-    view: str,
+    edge_type: str,
     relation: str,
     edge_key: str,
 ) -> str:
-    digest = stable_hash(namespace, view, relation, compact_key(edge_key))
-    return f"edge:{view}:{digest}"
+    digest = stable_hash(namespace, edge_type, relation, compact_key(edge_key))
+    return f"edge:{edge_type}:{digest}"
 
 
 def make_member_signature(member_ids: list[str], roles: dict[str, str] | None = None) -> str:
@@ -60,11 +54,3 @@ def make_triple_id(
         qualifiers or {},
     )
     return f"triple:{digest}"
-
-
-def _canonical(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _canonical(val) for key, val in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_canonical(item) for item in value]
-    return value

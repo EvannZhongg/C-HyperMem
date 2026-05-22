@@ -3,14 +3,14 @@ from __future__ import annotations
 from collections import Counter
 from math import log
 
-from c_hypermem.schema import SharedNode
+from c_hypermem.schema import MemoryNode
 from c_hypermem.utils.text import tokenize
 
 
 class LexicalScorer:
     """Small BM25-like scorer over a namespace snapshot."""
 
-    def score(self, query: str, nodes: list[SharedNode]) -> list[tuple[SharedNode, float, dict[str, float]]]:
+    def score(self, query: str, nodes: list[MemoryNode]) -> list[tuple[MemoryNode, float, dict[str, float]]]:
         query_terms = tokenize(query)
         if not query_terms or not nodes:
             return []
@@ -22,7 +22,7 @@ class LexicalScorer:
             df.update(set(terms))
 
         query_counter = Counter(query_terms)
-        scored: list[tuple[SharedNode, float, dict[str, float]]] = []
+        scored: list[tuple[MemoryNode, float, dict[str, float]]] = []
         for node, terms in zip(nodes, doc_terms):
             tf = Counter(terms)
             doc_len = max(len(terms), 1)
@@ -46,10 +46,10 @@ class LexicalScorer:
         return scored
 
 
-def _node_text(node: SharedNode) -> str:
+def _node_text(node: MemoryNode) -> str:
     triple_text = " ".join(
         f"{triple.subject} {triple.predicate} {triple.object}" for triple in node.local_graph.triples
     )
     aliases = " ".join(str(alias) for alias in node.metadata.get("aliases", []))
-    return " ".join([node.content, node.summary, aliases, triple_text])
-
+    attributes = " ".join(str(value) for value in node.attributes.values())
+    return " ".join([node.content, node.summary, aliases, attributes, triple_text])

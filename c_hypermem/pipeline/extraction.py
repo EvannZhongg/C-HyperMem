@@ -14,7 +14,6 @@ class ExtractionContext:
 
 
 class MemoryExtractor(Protocol):
-    """Produces memory nodes and optional view edges from normalized messages."""
+    """Produces memory nodes and optional hyperedges from normalized messages."""
 
     def extract(self, messages: list[Message], context: ExtractionContext) -> IngestionOutput: ...
-

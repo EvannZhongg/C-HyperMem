@@ -5,9 +5,9 @@ from typing import Any
 from c_hypermem.config import MemoryConfig
 from c_hypermem.errors import IngestionNotConfiguredError
 from c_hypermem.pipeline.extraction import ExtractionContext, MemoryExtractor
+from c_hypermem.pipeline.hyperedge_builder import HyperEdgeBuilder
 from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
 from c_hypermem.pipeline.maintenance import GraphMaintenance
-from c_hypermem.pipeline.view_projection import ViewProjector
 from c_hypermem.schema import AgentInteraction, IngestionOutput, MemoryImportBatch, Message
 
 
@@ -17,12 +17,12 @@ class IngestionPipeline:
         config: MemoryConfig,
         *,
         extractor: MemoryExtractor | None = None,
-        view_projector: ViewProjector | None = None,
+        hyperedge_builder: HyperEdgeBuilder | None = None,
     ) -> None:
         self.config = config
         self.extractor = extractor
         self.local_graph_builder = LocalGraphBuilder()
-        self.view_projector = view_projector
+        self.hyperedge_builder = hyperedge_builder
         self.maintenance = GraphMaintenance()
 
     def ingest_interaction(
@@ -90,9 +90,9 @@ class IngestionPipeline:
         nodes = extracted.nodes
         edges = extracted.edges
         nodes = self.local_graph_builder.build(nodes)
-        if self.view_projector is not None:
+        if self.hyperedge_builder is not None:
             edges.extend(
-                self.view_projector.project(
+                self.hyperedge_builder.build(
                     nodes,
                     namespace=namespace,
                     metadata=metadata,

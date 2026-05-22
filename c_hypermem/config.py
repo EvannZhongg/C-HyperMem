@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from c_hypermem.errors import ConfigError
 
@@ -24,18 +24,65 @@ class OpenAICompatibleModelConfig(BaseModel):
 class IngestionConfig(BaseModel):
     event_mode: str = "interaction"
     incremental_build: bool = False
+    max_facts_per_event: int = 12
     extractor: str | None = None
-    view_projector: str | None = None
 
 
-class ViewsConfig(BaseModel):
-    enabled: list[str] = Field(
-        default_factory=lambda: [
-            "provenance_view",
-            "entity_state_view",
-            "temporal_view",
-        ]
-    )
+class ExtractionConfig(BaseModel):
+    prompt: str = "extraction/memory_extraction.md"
+    output_schema: str = "minimal_memory_candidates"
+    forbid_model_ids: bool = True
+    forbid_confidence: bool = True
+    pass_node_types_to_prompt: bool = True
+    allow_unknown_node_types: bool = True
+
+
+class LocalGraphPolicyConfig(BaseModel):
+    enabled: bool = True
+    allow_triples: bool = True
+    allow_attributes: bool = True
+    allow_roles: bool = True
+
+
+class IndexingPolicyConfig(BaseModel):
+    lexical: bool = True
+    vector: bool = True
+    alias_index: bool = False
+
+
+class TimePolicyConfig(BaseModel):
+    prefer_world_time: bool = False
+
+
+class NodeTypeConfig(BaseModel):
+    enabled: bool = True
+    id_strategy: str = "content_hash"
+    stable_key_fields: list[str] = Field(default_factory=list)
+    alias_resolution: bool = False
+    property_index: bool = False
+    local_graph: LocalGraphPolicyConfig = Field(default_factory=LocalGraphPolicyConfig)
+    indexing: IndexingPolicyConfig = Field(default_factory=IndexingPolicyConfig)
+    time: TimePolicyConfig = Field(default_factory=TimePolicyConfig)
+
+
+class NodeTypesConfig(BaseModel):
+    default_policy: NodeTypeConfig = Field(default_factory=NodeTypeConfig)
+    types: dict[str, NodeTypeConfig] = Field(default_factory=dict)
+
+
+class HyperEdgesConfig(BaseModel):
+    enabled: bool = True
+    build_from_extraction: bool = True
+    member_policy_default: str = "appendable"
+    basic_edge_types: list[str] = Field(default_factory=lambda: ["evidence", "state", "correction"])
+
+
+class LocalGraphConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = True
+    schema_name: str = Field(default="uniform", alias="schema")
+    configured_by_node_type: bool = True
 
 
 class RetrievalConfig(BaseModel):
@@ -43,7 +90,7 @@ class RetrievalConfig(BaseModel):
     vector_top_n: int = 30
     edge_top_n: int = 30
     rerank_top_n: int = 12
-    use_view_expansion: bool = True
+    use_hyperedge_expansion: bool = True
     use_temporal_filter: bool = True
     use_recency_decay: bool = True
     recency_decay_lambda: float = 0.03
@@ -55,7 +102,10 @@ class MemoryConfig(BaseModel):
     llm: OpenAICompatibleModelConfig | None = None
     embedding: OpenAICompatibleModelConfig | None = None
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
-    views: ViewsConfig = Field(default_factory=ViewsConfig)
+    extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
+    node_types: NodeTypesConfig = Field(default_factory=NodeTypesConfig)
+    hyperedges: HyperEdgesConfig = Field(default_factory=HyperEdgesConfig)
+    local_graph: LocalGraphConfig = Field(default_factory=LocalGraphConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     default_top_k: int = 10
     prompt_version: str = "0.1.0"
@@ -91,42 +141,13 @@ class MemoryConfig(BaseModel):
 
 
 def _normalize_external_config(raw: dict[str, Any]) -> dict[str, Any]:
-    """Accept both standalone and agent_memory_eval-style config shapes."""
     data = dict(raw)
-
-    storage_path = data.pop("storage_path", None)
-    if storage_path and "storage" not in data:
-        data["storage"] = {"path": str(Path(storage_path) / "memory.sqlite3")}
-
-    if "index" in data:
-        data.setdefault("metadata", {})["index"] = data.pop("index")
-
-    if "extraction_llm" in data and "llm" not in data:
-        data["llm"] = _normalize_model_config(data.pop("extraction_llm"))
-    elif "extraction_llm" in data:
-        data.setdefault("metadata", {})["extraction_llm"] = data.pop("extraction_llm")
-
-    if "embedding_model" in data and "embedding" not in data:
-        data["embedding"] = _normalize_model_config(data.pop("embedding_model"))
-    elif "embedding_model" in data:
-        data.setdefault("metadata", {})["embedding_model"] = data.pop("embedding_model")
-
-    data.pop("backend", None)
-    data.pop("package_path", None)
     data.pop("include", None)
-    data.pop("includes", None)
-    return data
-
-
-def _normalize_model_config(raw: dict[str, Any]) -> dict[str, Any]:
-    data = dict(raw)
-    if "api_key_env" in data and "api_key" not in data:
-        data["api_key"] = "${" + str(data.pop("api_key_env")) + "}"
     return data
 
 
 def _load_includes(raw: dict[str, Any], base_dir: Path) -> dict[str, Any]:
-    include_values = raw.get("include", raw.get("includes", []))
+    include_values = raw.get("include", [])
     if isinstance(include_values, (str, Path)):
         include_paths = [include_values]
     else:

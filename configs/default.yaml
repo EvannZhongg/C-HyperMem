@@ -1,5 +1,6 @@
 include:
   - models.yaml
+  - node_types.yaml
 
 storage:
   backend: sqlite
@@ -11,23 +12,37 @@ prompt_version: 0.1.0
 ingestion:
   event_mode: interaction
   incremental_build: false
+  max_facts_per_event: 12
   extractor: null
-  view_projector: null
 
-views:
-  enabled:
-    - provenance_view
-    - entity_state_view
-    - temporal_view
-    - topic_or_intent_view
-    - preference_profile_view
+extraction:
+  prompt: extraction/memory_extraction.md
+  output_schema: minimal_memory_candidates
+  forbid_model_ids: true
+  forbid_confidence: true
+  pass_node_types_to_prompt: true
+  allow_unknown_node_types: true
+
+hyperedges:
+  enabled: true
+  build_from_extraction: true
+  member_policy_default: appendable
+  basic_edge_types:
+    - evidence
+    - state
+    - correction
+
+local_graph:
+  enabled: true
+  schema: uniform
+  configured_by_node_type: true
 
 retrieval:
   lexical_top_n: 30
   vector_top_n: 30
   edge_top_n: 30
   rerank_top_n: 12
-  use_view_expansion: true
+  use_hyperedge_expansion: true
   use_temporal_filter: true
   use_recency_decay: true
   recency_decay_lambda: 0.03

@@ -15,15 +15,7 @@ class Prompt:
 
 class PromptRegistry:
     PROMPT_PATHS = {
-        "extraction.fact": "extraction/fact_extraction.md",
-        "extraction.entity": "extraction/entity_extraction.md",
-        "local_graph.event": "local_graph/event_local_graph.md",
-        "local_graph.fact": "local_graph/fact_local_graph.md",
-        "views.provenance_view": "views/provenance_view.md",
-        "views.entity_state_view": "views/entity_state_view.md",
-        "views.temporal_view": "views/temporal_view.md",
-        "views.topic_or_intent_view": "views/topic_or_intent_view.md",
-        "views.preference_profile_view": "views/preference_profile_view.md",
+        "extraction.memory": "extraction/memory_extraction.md",
         "retrieval.query_analysis": "retrieval/query_analysis.md",
         "maintenance.fact_merge": "maintenance/fact_merge.md",
         "maintenance.contradiction_check": "maintenance/contradiction_check.md",

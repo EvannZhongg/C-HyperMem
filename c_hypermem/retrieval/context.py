@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from c_hypermem.schema import SharedNode
+from c_hypermem.schema import MemoryNode
 
 
-def compose_result_content(node: SharedNode, views: list[str]) -> str:
+def compose_result_content(node: MemoryNode, edge_types: list[str]) -> str:
     label = node.type.title()
     source = node.metadata.get("source_session_id")
     date = node.metadata.get("date") or node.time.world.event_time
@@ -12,8 +12,7 @@ def compose_result_content(node: SharedNode, views: list[str]) -> str:
         suffix_parts.append(f"session={source}")
     if date:
         suffix_parts.append(f"date={date}")
-    if views:
-        suffix_parts.append(f"views={','.join(views)}")
+    if edge_types:
+        suffix_parts.append(f"edge_types={','.join(edge_types)}")
     suffix = f"\nSource: {' '.join(suffix_parts)}" if suffix_parts else ""
     return f"[{label}] {node.content}{suffix}"
-

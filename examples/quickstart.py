@@ -13,14 +13,6 @@ def main() -> None:
     memory = Memory.from_config(
         {
             "storage": {"path": str(Path("runs") / "quickstart.sqlite3")},
-            "views": {
-                "enabled": [
-                    "provenance_view",
-                    "entity_state_view",
-                    "temporal_view",
-                    "preference_profile_view",
-                ]
-            },
         }
     )
     namespace = "quickstart"

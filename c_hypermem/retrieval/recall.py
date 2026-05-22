@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from c_hypermem.config import RetrievalConfig
 from c_hypermem.retrieval.context import compose_result_content
 from c_hypermem.retrieval.query_analysis import QueryAnalyzer, QueryAnalysis
-from c_hypermem.schema import SearchResult, SharedNode, ViewEdge
+from c_hypermem.schema import HyperEdge, MemoryNode, SearchResult
 from c_hypermem.stores.base import MemoryStore
 from c_hypermem.stores.lexical_store import LexicalScorer
 from c_hypermem.utils.time import decay_weight
@@ -13,11 +13,11 @@ from c_hypermem.utils.time import decay_weight
 
 @dataclass
 class Candidate:
-    node: SharedNode
+    node: MemoryNode
     score: float
     score_parts: dict[str, float] = field(default_factory=dict)
     edge_ids: set[str] = field(default_factory=set)
-    views: set[str] = field(default_factory=set)
+    edge_types: set[str] = field(default_factory=set)
 
 
 class Retriever:
@@ -46,7 +46,7 @@ class Retriever:
             candidate.score_parts.update(parts)
             self._apply_structural_scores(candidate, analysis, current_turn)
 
-        if self.config.use_view_expansion and candidates:
+        if self.config.use_hyperedge_expansion and candidates:
             self._expand_candidates(namespace, candidates)
 
         preferred = self._prefer_answer_nodes(candidates.values(), analysis)
@@ -61,10 +61,10 @@ class Retriever:
             for seed_id in seed_ids:
                 if seed_id in edge.node_ids and seed_id in candidates:
                     candidates[seed_id].edge_ids.add(edge.id)
-                    candidates[seed_id].views.add(edge.view)
+                    candidates[seed_id].edge_types.add(edge.edge_type)
                     candidates[seed_id].score += 0.15
-                    candidates[seed_id].score_parts["view_coherence"] = (
-                        candidates[seed_id].score_parts.get("view_coherence", 0.0) + 0.15
+                    candidates[seed_id].score_parts["edge_coherence"] = (
+                        candidates[seed_id].score_parts.get("edge_coherence", 0.0) + 0.15
                     )
             expanded_ids.extend(
                 node_id
@@ -78,8 +78,8 @@ class Retriever:
             incident = [edge for edge in edges if node.id in edge.node_ids]
             for edge in incident:
                 candidate.edge_ids.add(edge.id)
-                candidate.views.add(edge.view)
-            expansion_score = 0.35 + min(len(candidate.views), 3) * 0.1
+                candidate.edge_types.add(edge.edge_type)
+            expansion_score = 0.35 + min(len(candidate.edge_types), 3) * 0.1
             candidate.score += expansion_score
             candidate.score_parts["edge_expansion"] = candidate.score_parts.get("edge_expansion", 0.0) + expansion_score
 
@@ -138,8 +138,8 @@ class Retriever:
             "source_session_id": node.metadata.get("source_session_id"),
             "source_event_id": node.metadata.get("source_event_id"),
             "source_turn_ids": node.metadata.get("source_turn_ids", []),
-            "view_edge_ids": sorted(candidate.edge_ids),
-            "views": sorted(candidate.views),
+            "hyper_edge_ids": sorted(candidate.edge_ids),
+            "edge_types": sorted(candidate.edge_types),
             "score_parts": candidate.score_parts,
             "time": node.time.model_dump(mode="json"),
             "node_metadata": node.metadata,
@@ -148,13 +148,13 @@ class Retriever:
             metadata["triples"] = [triple.model_dump(mode="json") for triple in node.local_graph.triples[:5]]
         return SearchResult(
             id=node.id,
-            content=compose_result_content(node, sorted(candidate.views)),
+            content=compose_result_content(node, sorted(candidate.edge_types)),
             score=float(candidate.score),
             metadata=metadata,
         )
 
 
-def _expandable_role(edge: ViewEdge, node_id: str) -> bool:
+def _expandable_role(edge: HyperEdge, node_id: str) -> bool:
     role = edge.roles.get(node_id, "")
     return role in {
         "derived_fact",
@@ -164,4 +164,3 @@ def _expandable_role(edge: ViewEdge, node_id: str) -> bool:
         "topic_evidence",
         "preference_evidence",
     }
-

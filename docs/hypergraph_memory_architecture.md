@@ -46,6 +46,57 @@ fact:john_wants_to_join_military
     topic_or_intent_view
 ```
 
+### 2.1 ID 生成原则
+
+共享节点、高阶边、实体和局部三元组的 canonical id 应由系统自动生成，而不是由模型生成。
+
+模型可以帮助抽取名称、事实、关系、别名和解释，但不应控制：
+
+- node id
+- edge id
+- entity id
+- triple id
+- namespace
+- storage primary key
+
+原因：
+
+- 模型生成的 id 容易跨轮漂移。
+- 同一实体可能被模型命名成多个不同 id。
+- 用户输入可能通过 prompt injection 影响 id。
+- 难以做去重、合并和可复现调试。
+
+更稳的做法是：
+
+```text
+系统规范化候选内容
+  -> 生成 stable key
+  -> 根据 namespace + type + stable key 生成 hash id
+```
+
+示例：
+
+```text
+entity_id = hash(namespace + canonical_name + entity_type + disambiguators)
+fact_id = hash(namespace + normalized_subject + predicate + object + valid_time)
+edge_id = hash(namespace + view + relation + sorted(member_node_ids))
+triple_id = hash(namespace + owner_node_id + normalized_spo + qualifiers)
+```
+
+实体节点需要区分 `entity_id` 和名称字段：
+
+```python
+{
+    "entity_id": "entity:...",
+    "canonical_name": "Andrew",
+    "display_name": "Andrew",
+    "aliases": ["Andy"],
+    "entity_type": "person"
+}
+```
+
+其中 `canonical_name` 和 `aliases` 可以由模型辅助抽取，但 `entity_id` 必须由系统生成。
+
 ## 3. 多视角高阶边
 
 高阶边表示：在某个关系视角下，一组节点共同形成一个记忆单元。

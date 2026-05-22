@@ -1,0 +1,30 @@
+storage:
+  backend: sqlite
+  path: runs/c_hypermem/memory.sqlite3
+
+default_top_k: 10
+prompt_version: 0.1.0
+
+ingestion:
+  event_mode: interaction
+  incremental_build: false
+  extractor: null
+  view_projector: null
+
+views:
+  enabled:
+    - provenance_view
+    - entity_state_view
+    - temporal_view
+    - topic_or_intent_view
+    - preference_profile_view
+
+retrieval:
+  lexical_top_n: 30
+  edge_top_n: 30
+  rerank_top_n: 12
+  use_view_expansion: true
+  use_temporal_filter: true
+  use_recency_decay: true
+  recency_decay_lambda: 0.03
+  access_boost: 0.05

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "c-hypermem"
+version = "0.1.0"
+description = "Composite hypergraph memory for long-term conversational agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+llms = ["openai>=1.0"]
+vector = ["numpy>=1.24"]
+eval = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["c_hypermem"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

@@ -1,6 +1,6 @@
 # C-HyperMem 后续开发架构
 
-本文档基于 `docs/hypergraph_memory_architecture.md` 的“多视角复合节点超图 Memory”构思，给出后续工程开发架构。目标是让 C-HyperMem 作为独立 Python 包开发，同时满足 `agent_memory_eval` 的自研 memory backend 接入要求。
+本文档基于 `docs/hypergraph_memory_architecture.md` 的“复合节点超图 Memory”构思，给出后续工程开发架构。目标是让 C-HyperMem 作为独立 Python 包开发，同时满足 `agent_memory_eval` 的自研 memory backend 接入要求。
 
 核心边界：
 
@@ -130,7 +130,23 @@ C-HyperMem/
     llms/
       base.py
       openai_compatible.py
-      prompts.py
+
+    prompts/                  # 每个 prompt 用独立 markdown 文件管理
+      extraction/
+        fact_extraction.md
+        entity_extraction.md
+      local_graph/
+        event_local_graph.md
+        fact_local_graph.md
+      views/
+        entity_state_view.md
+        topic_or_intent_view.md
+        preference_profile_view.md
+      retrieval/
+        query_analysis.md
+      maintenance/
+        fact_merge.md
+        contradiction_check.md
 
     embeddings/
       base.py
@@ -224,6 +240,70 @@ __all__ = ["Memory"]
 ```
 
 这和 mem0 通过包入口暴露 `Memory`、A-mem 通过独立包暴露 memory system 的方式一致：外部系统调用公开 API，不进入内部 pipeline 或 store。
+
+### 2.2 Prompt 管理规范
+
+所有 prompt 必须放在 `c_hypermem/prompts/` 路径下，并且每个 prompt 使用一个独立 `.md` 文件管理。不要把长 prompt 硬编码在 Python 文件里。
+
+推荐文件结构：
+
+```text
+c_hypermem/prompts/
+  extraction/
+    fact_extraction.md
+    entity_extraction.md
+  local_graph/
+    event_local_graph.md
+    fact_local_graph.md
+  views/
+    provenance_view.md
+    entity_state_view.md
+    temporal_view.md
+    topic_or_intent_view.md
+    preference_profile_view.md
+  retrieval/
+    query_analysis.md
+  maintenance/
+    fact_merge.md
+    contradiction_check.md
+```
+
+每个 prompt 文件建议使用 markdown front matter 记录元信息：
+
+```markdown
+---
+id: extraction.fact
+version: 0.1.0
+owner: c_hypermem
+inputs:
+  - event_text
+  - metadata
+outputs:
+  - facts
+---
+
+# Task
+
+Extract candidate facts from the event.
+
+# Output Schema
+
+...
+```
+
+代码侧只通过 prompt id 或相对路径加载 prompt：
+
+```python
+prompt = prompt_registry.load("extraction.fact")
+```
+
+Prompt 管理要求：
+
+- prompt 文件是算法包的一部分，应随 `c_hypermem` 一起发布。
+- prompt 修改必须改变 prompt hash，并参与 `prompt_template_hash`。
+- 缓存策略中的 `prompt_template_hash` 应由启用的 prompt 文件内容和版本共同计算。
+- prompt 文件可以包含输出 schema，但不应要求模型生成系统主键。
+- Python 中只保留 prompt loader、template renderer 和 schema validator，不保存长 prompt 文本。
 
 ## 3. 对外 API
 
@@ -373,6 +453,71 @@ class Memory:
 - tool 信息不一定进入长期事实，但应允许作为 provenance 或 event context。
 - `trace` 默认只用于 debug/provenance，不应直接变成用户画像事实。
 - `metadata` 可以保存外部系统字段，但核心 schema 不依赖特定 benchmark。
+
+### 3.4 ID 生成原则
+
+超图节点、视角边、实体、局部三元组的 canonical id 必须由 C-HyperMem 系统生成，不应由模型控制生成。
+
+原因：
+
+- 避免 LLM 输出不稳定导致同一实体跨轮漂移。
+- 避免 prompt injection 影响主键。
+- 避免重复节点、重复边和难以复现的存储状态。
+- 方便去重、merge、debug 和跨 namespace 隔离。
+
+LLM 可以输出：
+
+- 候选实体名称。
+- 实体别名。
+- 事实内容。
+- subject / predicate / object。
+- 关系类型。
+- 视角解释。
+- 置信度或 salience。
+
+LLM 不应输出或决定：
+
+- `node_id`
+- `edge_id`
+- `entity_id`
+- `triple_id`
+- namespace
+- storage primary key
+
+推荐由 `utils/ids.py` 提供统一 ID 工具：
+
+```python
+make_node_id(namespace, node_type, stable_key) -> str
+make_entity_id(namespace, canonical_name, entity_type, disambiguators=None) -> str
+make_edge_id(namespace, view, relation, member_ids, roles=None) -> str
+make_triple_id(namespace, owner_node_id, subject, predicate, object, qualifiers=None) -> str
+```
+
+ID 可以采用确定性 hash：
+
+```text
+node:{type}:{hash(namespace + type + stable_key)}
+entity:{hash(namespace + canonical_name + entity_type + disambiguators)}
+edge:{view}:{hash(namespace + view + relation + sorted(member_ids + roles))}
+triple:{hash(namespace + owner_node_id + normalized_spo + qualifiers)}
+```
+
+也可以在需要保留插入顺序时使用 ULID/UUIDv7，但应由系统生成，并保存 `dedupe_key` 支持合并。
+
+实体尤其需要区分：
+
+```python
+{
+    "entity_id": "entity:...",
+    "canonical_name": "Andrew",
+    "display_name": "Andrew",
+    "aliases": ["Andy"],
+    "entity_type": "person",
+    "dedupe_key": "person:andrew:conversation_scope"
+}
+```
+
+其中 `canonical_name` 和 `aliases` 可以由模型辅助抽取，但 `entity_id` 必须由系统根据规范化结果生成。
 
 `search()` 返回值使用普通 dict，方便 adapter 转成 `MemoryItem`：
 
@@ -639,16 +784,19 @@ add_memory(user_input, assistant_output, namespace, metadata, tool_calls, ...)
   1. normalize AgentInteraction
   2. resolve ingestion cache
   3. select changed/new interaction span
-  4. build TurnNode[]
-  5. build EventNode
-  6. extract FactNode[]
-  7. link / merge EntityNode[]
-  8. build LocalNodeGraph for selected nodes
-  9. project nodes into enabled views
-  10. write SharedNodes
-  11. write ViewEdges
-  12. update lexical / vector indexes
-  13. update ingestion cache cursor
+  4. extract candidate nodes / triples / relations
+  5. normalize candidate keys
+  6. generate system-controlled ids
+  7. build TurnNode[]
+  8. build EventNode
+  9. extract FactNode[]
+  10. link / merge EntityNode[]
+  11. build LocalNodeGraph for selected nodes
+  12. project nodes into enabled views
+  13. write SharedNodes
+  14. write ViewEdges
+  15. update lexical / vector indexes
+  16. update ingestion cache cursor
 ```
 
 ### 5.1 输入规范化

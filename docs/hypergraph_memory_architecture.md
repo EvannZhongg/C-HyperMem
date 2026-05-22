@@ -199,6 +199,29 @@ member_signature = hash(sorted(member_node_ids + roles))
 
 注意：这是系统内部结构，不建议直接要求 LLM “生成超图”。面向 LLM 的 prompt 应只要求抽取事实、事件、实体、属性、角色、三元组和来源片段，然后由系统把这些候选语义单元组装成多视角高阶边。
 
+### 3.1 一次抽取，多路投影
+
+不建议让同一段上下文反复经过多个 prompt，分别抽取实体、事实、局部图谱和视角关系。这样会增加成本、延迟和不一致风险。
+
+更好的方式是：
+
+```text
+原始上下文
+  -> LLM 进行一次紧凑语义抽取
+  -> 输出 entities / events / facts / attributes / roles / triples / sources
+  -> 系统生成共享节点
+  -> 系统构建局部图谱
+  -> 系统投影多视角高阶边
+```
+
+维护类 prompt 只在必要时调用：
+
+- 新旧事实可能重复时，调用 merge 判断。
+- 新旧事实可能冲突时，调用 contradiction 判断。
+- 查询阶段需要意图分析时，调用 query analysis。
+
+第一版可以只保留一个写入抽取 prompt，例如 `memory_extraction.md`。其他 prompt 是后续复杂化后的 fallback，而不是每轮都调用。
+
 ## 4. 候选关系视角
 
 这些视角只是候选，后续可以增删或重新命名。

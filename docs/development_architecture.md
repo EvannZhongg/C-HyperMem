@@ -135,15 +135,7 @@ C-HyperMem/
 
     prompts/                  # 每个 prompt 用独立 markdown 文件管理
       extraction/
-        fact_extraction.md
-        entity_extraction.md
-      local_graph/
-        event_local_graph.md
-        fact_local_graph.md
-      views/
-        entity_state_view.md
-        topic_or_intent_view.md
-        preference_profile_view.md
+        memory_extraction.md   # 默认唯一抽取 prompt，一次产出实体/事件/事实/三元组
       retrieval/
         query_analysis.md
       maintenance/
@@ -252,17 +244,7 @@ __all__ = ["Memory"]
 ```text
 c_hypermem/prompts/
   extraction/
-    fact_extraction.md
-    entity_extraction.md
-  local_graph/
-    event_local_graph.md
-    fact_local_graph.md
-  views/
-    provenance_view.md
-    entity_state_view.md
-    temporal_view.md
-    topic_or_intent_view.md
-    preference_profile_view.md
+    memory_extraction.md
   retrieval/
     query_analysis.md
   maintenance/
@@ -274,19 +256,25 @@ c_hypermem/prompts/
 
 ```markdown
 ---
-id: extraction.fact
+id: extraction.memory
 version: 0.1.0
 owner: c_hypermem
 inputs:
-  - event_text
+  - agent_interaction
   - metadata
 outputs:
+  - entities
+  - events
   - facts
+  - attributes
+  - roles
+  - triples
+  - sources
 ---
 
 # Task
 
-Extract candidate facts from the event.
+Extract concise memory candidates from the interaction.
 
 # Output Schema
 
@@ -309,6 +297,25 @@ Prompt 管理要求：
 - LLM 输出字段应保持短小，只抽取事实、事件、实体、属性、角色、三元组和来源片段。
 - LLM 不输出 `confidence`、`salience`、`weight`；这类指标由系统后续根据抽取次数、来源数量、访问次数、时间衰减等计算。
 - Python 中只保留 prompt loader、template renderer 和 schema validator，不保存长 prompt 文本。
+
+默认不要让同一段上下文反复经过多个 prompt 做不同颗粒度抽取。推荐“一次语义抽取，多路系统投影”：
+
+```text
+AgentInteraction
+  -> memory_extraction.md 只调用一次
+  -> 得到 entities / events / facts / attributes / roles / triples / sources
+  -> 系统规则生成 SharedNodes
+  -> 系统规则构建 LocalNodeGraphs
+  -> 系统规则投影 MultiViewEdges
+```
+
+其他 prompt 只作为按需 fallback：
+
+- `fact_merge.md`：只有存在相似旧事实时调用。
+- `contradiction_check.md`：只有同一实体/属性下出现候选冲突时调用。
+- `query_analysis.md`：只在检索阶段调用，和写入抽取无关。
+
+如果后续发现单个 `memory_extraction.md` 太大，再拆分 prompt；但拆分后也应避免重复传入完整上下文，可以传入第一次抽取后的结构化候选，而不是原始全文。
 
 ### 2.3 LLM-facing Prompt 原则
 
@@ -983,23 +990,21 @@ add_memory(user_input, assistant_output, namespace, metadata, tool_calls, ...)
   1. normalize AgentInteraction
   2. resolve ingestion cache
   3. select changed/new interaction span
-  4. extract candidate nodes / triples / relations
-  5. normalize candidate keys
+  4. call memory_extraction.md once for the changed span
+  5. normalize extracted candidates
   6. resolve entity aliases against existing EntityNode pool
   7. retrieve existing facts/triples with same entity + property key
   8. detect duplicate / update / conflict
-  9. retire or invalidate old facts when needed
-  10. generate system-controlled ids for unresolved nodes / edges / triples
-  11. build TurnNode[]
-  12. build EventNode
-  13. extract FactNode[]
-  14. link / merge EntityNode[]
-  15. build LocalNodeGraph for selected nodes
-  16. project nodes into enabled views
-  17. write SharedNodes
-  18. write ViewEdges
-  19. update lexical / vector indexes
-  20. update ingestion cache cursor
+  9. call maintenance prompts only when ambiguous
+  10. retire or invalidate old facts when needed
+  11. generate system-controlled ids for unresolved nodes / edges / triples
+  12. build TurnNode[] / EventNode / FactNode[] / EntityNode[]
+  13. build LocalNodeGraph from extracted triples / attributes / roles
+  14. project nodes into enabled views by system rules
+  15. write SharedNodes
+  16. write ViewEdges
+  17. update lexical / vector indexes
+  18. update ingestion cache cursor
 ```
 
 ### 5.1 输入规范化

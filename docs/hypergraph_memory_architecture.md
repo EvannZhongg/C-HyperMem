@@ -50,7 +50,7 @@ fact:john_wants_to_join_military
 
 共享节点、高阶边、实体和局部三元组的 canonical id 应由系统自动生成，而不是由模型生成。
 
-模型可以帮助抽取名称、事实、关系、别名和解释，但不应控制：
+模型可以帮助抽取名称、事实、属性、角色、三元组、别名和来源片段，但不应控制：
 
 - node id
 - edge id
@@ -58,6 +58,9 @@ fact:john_wants_to_join_military
 - triple id
 - namespace
 - storage primary key
+- 节点权重或边权重
+- 置信度或重要性分数
+- 外层图结构
 
 原因：
 
@@ -70,6 +73,7 @@ fact:john_wants_to_join_military
 
 ```text
 系统规范化候选内容
+  -> 对实体候选先做别名对齐
   -> 生成 stable key
   -> 根据 namespace + type + stable key 生成 hash id
 ```
@@ -79,9 +83,68 @@ fact:john_wants_to_join_military
 ```text
 entity_id = hash(namespace + canonical_name + entity_type + disambiguators)
 fact_id = hash(namespace + normalized_subject + predicate + object + valid_time)
-edge_id = hash(namespace + view + relation + sorted(member_node_ids))
 triple_id = hash(namespace + owner_node_id + normalized_spo + qualifiers)
 ```
+
+高阶边 ID 统一使用稳定 `edge_key`，不要从当前成员集合生成：
+
+```text
+edge_id = hash(namespace + view + relation + edge_key)
+```
+
+其中 `edge_key` 是边的稳定锚点，例如：
+
+```text
+provenance_view:
+  edge_key = event_id + ":provenance"
+
+topic_or_intent_view:
+  edge_key = "topic:" + normalized_topic_name
+
+task_or_plan_view:
+  edge_key = "plan:" + normalized_plan_name
+
+preference_profile_view:
+  edge_key = "profile:" + normalized_profile_name
+
+entity_state_view:
+  edge_key = entity_id + ":" + state_type
+```
+
+成员集合只用于 `member_signature` 和 `member_version`，不参与 `edge_id`：
+
+```text
+member_signature = hash(sorted(member_node_ids + roles))
+```
+
+当边成员变化时，只更新成员列表、`member_signature`、`member_version` 和 `updated_at`，不改变 `edge_id`。这样静态边和动态边可以使用同一套 ID 管理方式。
+
+### 2.2 实体别名对齐
+
+实体 ID 生成前必须先做轻量级别名对齐。系统不应在模型抽取到一个新实体名称后立刻 hash。
+
+推荐流程：
+
+```text
+模型抽取实体名称
+  -> 规范化名称和 aliases
+  -> 在已有 EntityNode 池中检索
+  -> 命中 canonical_name / display_name / aliases:
+       复用已有 entity_id
+     未命中:
+       用当前 canonical_name 生成新的 entity_id
+```
+
+第一版可以只做简单字符串匹配：
+
+- 大小写归一。
+- 去除多余空格和标点。
+- 匹配 `canonical_name`。
+- 匹配 `display_name`。
+- 匹配 `aliases`。
+- 可选使用 `entity_type` 限制候选范围。
+
+只有确认是新实体时，才生成新的 hash ID。
 
 实体节点需要区分 `entity_id` 和名称字段：
 
@@ -95,7 +158,7 @@ triple_id = hash(namespace + owner_node_id + normalized_spo + qualifiers)
 }
 ```
 
-其中 `canonical_name` 和 `aliases` 可以由模型辅助抽取，但 `entity_id` 必须由系统生成。
+其中 `canonical_name` 和 `aliases` 可以由模型辅助抽取，但 `entity_id` 必须由系统在别名对齐后复用或生成。
 
 ## 3. 多视角高阶边
 
@@ -106,6 +169,10 @@ triple_id = hash(namespace + owner_node_id + normalized_spo + qualifiers)
     "id": "edge:...",
     "view": "entity_state_view",
     "relation": "state_of_entity",
+    "edge_key": "entity:andrew:pet_ownership",
+    "member_policy": "appendable",
+    "member_signature": "sha256:...",
+    "member_version": 3,
     "node_ids": [
         "entity:andrew",
         "fact:andrew_has_pet_toby",
@@ -115,11 +182,6 @@ triple_id = hash(namespace + owner_node_id + normalized_spo + qualifiers)
         "entity:andrew": "subject",
         "fact:andrew_has_pet_toby": "state_fact",
         "event:andrew_mentions_toby": "evidence_event"
-    },
-    "weights": {
-        "entity:andrew": 1.0,
-        "fact:andrew_has_pet_toby": 0.9,
-        "event:andrew_mentions_toby": 0.6
     }
 }
 ```
@@ -129,8 +191,13 @@ triple_id = hash(namespace + owner_node_id + normalized_spo + qualifiers)
 - 边属于某个视角。
 - 节点属于共享节点池。
 - 同一节点可以挂到多个高阶边。
-- 高阶边可以保存成员角色和权重。
+- 高阶边可以保存成员角色。
+- 节点或边的权重由系统后续计算，例如基于抽取次数、来源数量、访问次数、时间衰减等。
 - 不同视角允许对同一节点产生不同解释。
+- `edge_id` 由稳定 `edge_key` 定义；成员集合变化不改变 `edge_id`。
+- `member_policy` 可以是 `immutable`、`appendable` 或 `versioned`，只控制成员更新方式，不控制 ID 生成方式。
+
+注意：这是系统内部结构，不建议直接要求 LLM “生成超图”。面向 LLM 的 prompt 应只要求抽取事实、事件、实体、属性、角色、三元组和来源片段，然后由系统把这些候选语义单元组装成多视角高阶边。
 
 ## 4. 候选关系视角
 
@@ -292,8 +359,7 @@ plan:alice_job_search
             ["morning interviews", "is_a", "interview_schedule"]
         ],
         "attributes": {
-            "polarity": "positive",
-            "confidence": 0.82
+            "polarity": "positive"
         }
     }
 }
@@ -415,7 +481,7 @@ plan:alice_job_search
 
 - `EventNode` / `FactNode` / `EntityNode` 等共享节点应保存节点级时间。
 - `MultiViewEdge` 可以保存边级时间，尤其是 `entity_state_view`、`task_or_plan_view` 这类关系本身会随时间变化的视角。
-- `LocalNodeGraph` 中的三元组可以保存 `valid_time`、`source_event_id`、`confidence` 等 qualifier，但不应复制整个节点生命周期。
+- `LocalNodeGraph` 中的三元组可以保存 `valid_time`、`source_event_id` 等 qualifier，但不应复制整个节点生命周期。
 
 ### 6.4 自动更新规则
 
@@ -520,6 +586,53 @@ system prompt 改变:
 需要注意：只读取新增上下文，不等于只新增节点。新上下文可能纠正旧事实、补充旧事件、改变实体消歧或让旧事实挂入新的关系视角。因此增量模式仍然允许更新旧节点、旧边和旧局部图谱。
 
 也就是说，缓存策略减少重复读取和重复抽取，但不限制图结构维护。
+
+### 8.1 冲突事实退役
+
+增量构建时，即使只读取新增消息，也必须在写入前检查新事实是否与旧节点冲突。
+
+示例：
+
+```text
+旧事实:
+  Toby --is_a--> dog
+
+新消息:
+  "Toby my cat"
+
+新事实:
+  Toby --is_a--> cat
+```
+
+这种情况下，不应直接写入新事实而让两条矛盾事实同时 active。也不建议物理覆盖旧事实。更合理的做法是：
+
+```text
+1. 根据 entity + predicate / attribute 检索旧事实
+2. 发现冲突
+3. 保留新 FactNode
+4. 将旧 FactNode 标记为 retired / invalidated
+5. 记录 supersedes / invalidates 关系
+6. 必要时更新旧事实 valid_time.end
+7. 在局部图谱中将旧 triple 标记 retired，新 triple 标记 active
+```
+
+原因：
+
+- 保留历史来源。
+- 支持 as-of 时间问题。
+- 方便调试和回滚。
+- 避免误判冲突时丢失证据。
+
+推荐状态：
+
+```text
+active
+retired
+invalidated
+uncertain
+```
+
+LLM 可以辅助判断“新旧事实是否矛盾”，但系统必须先把同一实体/属性下的旧事实检索出来给它。不能只让 LLM 看新增消息就直接写入新事实。
 
 ## 9. 读写记忆时序
 

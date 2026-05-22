@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .pytest_tmp/
+.pytest_cache/
 runs/
 *.sqlite3
 *.sqlite3-shm

@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 
 NodeType = Literal["turn", "event", "fact", "entity", "state", "preference", "task"]
+MemoryStatus = Literal["active", "retired", "invalidated", "uncertain"]
+MemberPolicy = Literal["immutable", "appendable", "versioned"]
 
 
 class MemoryView(str, Enum):
@@ -56,6 +58,9 @@ class LocalTriple(BaseModel):
     subject: str
     predicate: str
     object: str
+    status: MemoryStatus = "active"
+    superseded_by: str | None = None
+    invalidated_by: str | None = None
     qualifiers: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -69,6 +74,11 @@ class SharedNode(BaseModel):
     id: str
     namespace: str
     type: NodeType
+    status: MemoryStatus = "active"
+    superseded_by: str | None = None
+    invalidated_by: str | None = None
+    status_reason: str | None = None
+    status_updated_at: str | None = None
     content: str
     summary: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -82,11 +92,34 @@ class ViewEdge(BaseModel):
     namespace: str
     view: str
     relation: str
+    edge_key: str
+    member_policy: MemberPolicy = "immutable"
+    member_signature: str = ""
+    member_version: int = 1
     node_ids: list[str]
     roles: dict[str, str] = Field(default_factory=dict)
     weights: dict[str, float] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     time: TimeBundle = Field(default_factory=TimeBundle)
+
+
+class EntityAliasIndexEntry(BaseModel):
+    namespace: str
+    normalized_alias: str
+    entity_type: str | None = None
+    entity_id: str
+    source_count: int = 1
+    updated_at: str | None = None
+
+
+class FactPropertyIndexEntry(BaseModel):
+    namespace: str
+    property_key: str
+    entity_id: str | None = None
+    predicate: str
+    fact_id: str
+    status: MemoryStatus = "active"
+    updated_at: str | None = None
 
 
 class Message(BaseModel):
@@ -153,4 +186,3 @@ class SearchResult(BaseModel):
     content: str
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
-

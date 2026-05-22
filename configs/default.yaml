@@ -1,3 +1,6 @@
+include:
+  - models.yaml
+
 storage:
   backend: sqlite
   path: runs/c_hypermem/memory.sqlite3
@@ -21,6 +24,7 @@ views:
 
 retrieval:
   lexical_top_n: 30
+  vector_top_n: 30
   edge_top_n: 30
   rerank_top_n: 12
   use_view_expansion: true

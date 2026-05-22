@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from c_hypermem import Memory
+from c_hypermem.config import MemoryConfig
 from c_hypermem.errors import IngestionNotConfiguredError
 from c_hypermem.schema import IngestionOutput, LocalNodeGraph, SharedNode, ViewEdge
 from c_hypermem.utils.ids import make_edge_id, make_node_id
@@ -53,6 +56,35 @@ def test_add_uses_explicit_extractor_only(tmp_path):
     assert results[0]["metadata"]["views"] == ["preference_profile_view"]
 
 
+def test_sqlite_view_edges_do_not_store_member_json(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    memory = Memory.from_config({"storage": {"path": str(db_path)}})
+    memory.close()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(view_edges)").fetchall()}
+
+    assert "node_ids_json" not in columns
+    assert "roles_json" not in columns
+    assert "weights_json" not in columns
+    assert {"edge_key", "member_policy", "member_signature", "member_version"} <= columns
+
+
+def test_default_config_includes_model_config_file():
+    config = MemoryConfig.load("configs/default.yaml")
+
+    assert config.llm is not None
+    assert config.llm.provider == "openai_compatible"
+    assert config.llm.model == "${CHYPERMEM_LLM_MODEL}"
+    assert config.llm.base_url == "${CHYPERMEM_LLM_BASE_URL}"
+    assert config.llm.api_key == "${CHYPERMEM_LLM_API_KEY}"
+    assert config.embedding is not None
+    assert config.embedding.provider == "openai_compatible"
+    assert config.embedding.model == "${CHYPERMEM_EMBEDDING_MODEL}"
+    assert config.embedding.base_url == "${CHYPERMEM_EMBEDDING_BASE_URL}"
+    assert config.embedding.api_key == "${CHYPERMEM_EMBEDDING_API_KEY}"
+
+
 class StaticExtractor:
     def __init__(self) -> None:
         self.called = False
@@ -82,12 +114,13 @@ class StaticExtractor:
                 context.namespace,
                 "preference_profile_view",
                 "profile_evidence",
-                [node.id],
-                {node.id: "preference_evidence"},
+                "profile:alice_preferences",
             ),
             namespace=context.namespace,
             view="preference_profile_view",
             relation="profile_evidence",
+            edge_key="profile:alice_preferences",
+            member_policy="appendable",
             node_ids=[node.id],
             roles={node.id: "preference_evidence"},
             weights={node.id: 1.0},
@@ -95,4 +128,3 @@ class StaticExtractor:
             time=make_time_bundle(current_turn=context.current_turn),
         )
         return IngestionOutput(nodes=[node], edges=[edge])
-

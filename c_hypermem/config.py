@@ -14,6 +14,13 @@ class StorageConfig(BaseModel):
     path: str = "runs/c_hypermem/memory.sqlite3"
 
 
+class OpenAICompatibleModelConfig(BaseModel):
+    provider: str = "openai_compatible"
+    model: str
+    base_url: str | None = None
+    api_key: str | None = None
+
+
 class IngestionConfig(BaseModel):
     event_mode: str = "interaction"
     incremental_build: bool = False
@@ -33,6 +40,7 @@ class ViewsConfig(BaseModel):
 
 class RetrievalConfig(BaseModel):
     lexical_top_n: int = 30
+    vector_top_n: int = 30
     edge_top_n: int = 30
     rerank_top_n: int = 12
     use_view_expansion: bool = True
@@ -44,6 +52,8 @@ class RetrievalConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    llm: OpenAICompatibleModelConfig | None = None
+    embedding: OpenAICompatibleModelConfig | None = None
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     views: ViewsConfig = Field(default_factory=ViewsConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
@@ -73,6 +83,7 @@ class MemoryConfig(BaseModel):
 
         if not isinstance(raw, dict):
             raise ConfigError(f"Config must be a mapping: {path}")
+        raw = _load_includes(raw, path.parent)
         return cls.model_validate(_normalize_external_config(raw))
 
     def stable_dict(self) -> dict[str, Any]:
@@ -90,9 +101,57 @@ def _normalize_external_config(raw: dict[str, Any]) -> dict[str, Any]:
     if "index" in data:
         data.setdefault("metadata", {})["index"] = data.pop("index")
 
-    if "extraction_llm" in data:
+    if "extraction_llm" in data and "llm" not in data:
+        data["llm"] = _normalize_model_config(data.pop("extraction_llm"))
+    elif "extraction_llm" in data:
         data.setdefault("metadata", {})["extraction_llm"] = data.pop("extraction_llm")
+
+    if "embedding_model" in data and "embedding" not in data:
+        data["embedding"] = _normalize_model_config(data.pop("embedding_model"))
+    elif "embedding_model" in data:
+        data.setdefault("metadata", {})["embedding_model"] = data.pop("embedding_model")
 
     data.pop("backend", None)
     data.pop("package_path", None)
+    data.pop("include", None)
+    data.pop("includes", None)
     return data
+
+
+def _normalize_model_config(raw: dict[str, Any]) -> dict[str, Any]:
+    data = dict(raw)
+    if "api_key_env" in data and "api_key" not in data:
+        data["api_key"] = "${" + str(data.pop("api_key_env")) + "}"
+    return data
+
+
+def _load_includes(raw: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    include_values = raw.get("include", raw.get("includes", []))
+    if isinstance(include_values, (str, Path)):
+        include_paths = [include_values]
+    else:
+        include_paths = list(include_values or [])
+
+    merged: dict[str, Any] = {}
+    for include_path in include_paths:
+        path = (base_dir / Path(include_path)).resolve()
+        if not path.exists():
+            raise ConfigError(f"Included config file does not exist: {path}")
+        try:
+            included = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"Invalid YAML config: {path}") from exc
+        if not isinstance(included, dict):
+            raise ConfigError(f"Included config must be a mapping: {path}")
+        merged = _deep_merge(merged, _load_includes(included, path.parent))
+    return _deep_merge(merged, dict(raw))
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result

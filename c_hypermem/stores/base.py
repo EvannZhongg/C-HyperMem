@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from c_hypermem.schema import SharedNode, ViewEdge
+from c_hypermem.schema import EntityAliasIndexEntry, FactPropertyIndexEntry, SharedNode, ViewEdge
 
 
 class MemoryStore(Protocol):
@@ -20,7 +20,24 @@ class MemoryStore(Protocol):
 
     def get_incident_edges(self, namespace: str, node_ids: list[str]) -> list[ViewEdge]: ...
 
+    def upsert_entity_aliases(self, aliases: list[EntityAliasIndexEntry]) -> None: ...
+
+    def find_entity_alias(
+        self,
+        namespace: str,
+        normalized_aliases: list[str],
+        entity_type: str | None = None,
+    ) -> EntityAliasIndexEntry | None: ...
+
+    def upsert_fact_properties(self, properties: list[FactPropertyIndexEntry]) -> None: ...
+
+    def find_fact_properties(
+        self,
+        namespace: str,
+        property_key: str,
+        status: str | None = "active",
+    ) -> list[FactPropertyIndexEntry]: ...
+
     def stats(self, namespace: str) -> dict[str, int]: ...
 
     def close(self) -> None: ...
-

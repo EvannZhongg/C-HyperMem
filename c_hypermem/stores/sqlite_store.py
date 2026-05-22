@@ -6,7 +6,16 @@ from pathlib import Path
 from typing import Any
 
 from c_hypermem.errors import StoreError
-from c_hypermem.schema import LocalNodeGraph, LocalTriple, SharedNode, TimeBundle, ViewEdge
+from c_hypermem.schema import (
+    EntityAliasIndexEntry,
+    FactPropertyIndexEntry,
+    LocalNodeGraph,
+    SharedNode,
+    TimeBundle,
+    ViewEdge,
+)
+from c_hypermem.utils.ids import make_member_signature
+from c_hypermem.utils.time import utc_now_iso
 
 
 class SQLiteStore:
@@ -24,6 +33,8 @@ class SQLiteStore:
                 "view_edge_members",
                 "view_edges",
                 "nodes",
+                "fact_property_index",
+                "entity_alias_index",
                 "ingestion_cache",
             ]:
                 self.conn.execute(f"DELETE FROM {table} WHERE namespace = ?", (namespace,))
@@ -34,12 +45,18 @@ class SQLiteStore:
                 self.conn.execute(
                     """
                     INSERT INTO nodes (
-                        namespace, node_id, node_type, content, summary,
+                        namespace, node_id, node_type, status, superseded_by,
+                        invalidated_by, status_reason, status_updated_at, content, summary,
                         time_json, local_graph_json, metadata_json, dedupe_key
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(namespace, node_id) DO UPDATE SET
                         node_type = excluded.node_type,
+                        status = excluded.status,
+                        superseded_by = excluded.superseded_by,
+                        invalidated_by = excluded.invalidated_by,
+                        status_reason = excluded.status_reason,
+                        status_updated_at = excluded.status_updated_at,
                         content = excluded.content,
                         summary = excluded.summary,
                         time_json = excluded.time_json,
@@ -51,6 +68,11 @@ class SQLiteStore:
                         node.namespace,
                         node.id,
                         node.type,
+                        node.status,
+                        node.superseded_by,
+                        node.invalidated_by,
+                        node.status_reason,
+                        node.status_updated_at,
                         node.content,
                         node.summary,
                         _to_json(node.time),
@@ -67,14 +89,18 @@ class SQLiteStore:
                     self.conn.execute(
                         """
                         INSERT INTO triples (
-                            namespace, triple_id, owner_node_id, subject, predicate, object, metadata_json
+                            namespace, triple_id, owner_node_id, subject, predicate, object,
+                            status, superseded_by, invalidated_by, metadata_json
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(namespace, triple_id) DO UPDATE SET
                             owner_node_id = excluded.owner_node_id,
                             subject = excluded.subject,
                             predicate = excluded.predicate,
                             object = excluded.object,
+                            status = excluded.status,
+                            superseded_by = excluded.superseded_by,
+                            invalidated_by = excluded.invalidated_by,
                             metadata_json = excluded.metadata_json
                         """,
                         (
@@ -84,6 +110,9 @@ class SQLiteStore:
                             triple.subject,
                             triple.predicate,
                             triple.object,
+                            triple.status,
+                            triple.superseded_by,
+                            triple.invalidated_by,
                             _to_json(triple.qualifiers),
                         ),
                     )
@@ -91,19 +120,22 @@ class SQLiteStore:
     def upsert_edges(self, edges: list[ViewEdge]) -> None:
         with self.conn:
             for edge in edges:
+                if not edge.member_signature:
+                    edge.member_signature = make_member_signature(edge.node_ids, edge.roles)
                 self.conn.execute(
                     """
                     INSERT INTO view_edges (
-                        namespace, edge_id, view, relation, node_ids_json,
-                        roles_json, weights_json, time_json, metadata_json
+                        namespace, edge_id, view, relation, edge_key, member_policy,
+                        member_signature, member_version, time_json, metadata_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(namespace, edge_id) DO UPDATE SET
                         view = excluded.view,
                         relation = excluded.relation,
-                        node_ids_json = excluded.node_ids_json,
-                        roles_json = excluded.roles_json,
-                        weights_json = excluded.weights_json,
+                        edge_key = excluded.edge_key,
+                        member_policy = excluded.member_policy,
+                        member_signature = excluded.member_signature,
+                        member_version = excluded.member_version,
                         time_json = excluded.time_json,
                         metadata_json = excluded.metadata_json
                     """,
@@ -112,9 +144,10 @@ class SQLiteStore:
                         edge.id,
                         edge.view,
                         edge.relation,
-                        _to_json(edge.node_ids),
-                        _to_json(edge.roles),
-                        _to_json(edge.weights),
+                        edge.edge_key,
+                        edge.member_policy,
+                        edge.member_signature,
+                        edge.member_version,
                         _to_json(edge.time),
                         _to_json(edge.metadata),
                     ),
@@ -138,6 +171,124 @@ class SQLiteStore:
                         ),
                     )
 
+    def upsert_entity_aliases(self, aliases: list[EntityAliasIndexEntry]) -> None:
+        with self.conn:
+            for alias in aliases:
+                self.conn.execute(
+                    """
+                    INSERT INTO entity_alias_index (
+                        namespace, normalized_alias, entity_type, entity_id, source_count, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(namespace, normalized_alias, entity_type) DO UPDATE SET
+                        entity_id = excluded.entity_id,
+                        source_count = entity_alias_index.source_count + excluded.source_count,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        alias.namespace,
+                        alias.normalized_alias,
+                        alias.entity_type or "",
+                        alias.entity_id,
+                        alias.source_count,
+                        alias.updated_at or utc_now_iso(),
+                    ),
+                )
+
+    def find_entity_alias(
+        self,
+        namespace: str,
+        normalized_aliases: list[str],
+        entity_type: str | None = None,
+    ) -> EntityAliasIndexEntry | None:
+        if not normalized_aliases:
+            return None
+        placeholders = ",".join("?" for _ in normalized_aliases)
+        params: list[Any] = [namespace, *normalized_aliases]
+        type_filter = ""
+        if entity_type is not None:
+            type_filter = "AND entity_type IN (?, '')"
+            params.append(entity_type)
+        row = self.conn.execute(
+            f"""
+            SELECT *
+            FROM entity_alias_index
+            WHERE namespace = ? AND normalized_alias IN ({placeholders}) {type_filter}
+            ORDER BY source_count DESC, updated_at DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if not row:
+            return None
+        return EntityAliasIndexEntry(
+            namespace=row["namespace"],
+            normalized_alias=row["normalized_alias"],
+            entity_type=row["entity_type"] or None,
+            entity_id=row["entity_id"],
+            source_count=int(row["source_count"]),
+            updated_at=row["updated_at"],
+        )
+
+    def upsert_fact_properties(self, properties: list[FactPropertyIndexEntry]) -> None:
+        with self.conn:
+            for item in properties:
+                self.conn.execute(
+                    """
+                    INSERT INTO fact_property_index (
+                        namespace, property_key, entity_id, predicate, fact_id, status, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(namespace, property_key, fact_id) DO UPDATE SET
+                        entity_id = excluded.entity_id,
+                        predicate = excluded.predicate,
+                        status = excluded.status,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        item.namespace,
+                        item.property_key,
+                        item.entity_id,
+                        item.predicate,
+                        item.fact_id,
+                        item.status,
+                        item.updated_at or utc_now_iso(),
+                    ),
+                )
+
+    def find_fact_properties(
+        self,
+        namespace: str,
+        property_key: str,
+        status: str | None = "active",
+    ) -> list[FactPropertyIndexEntry]:
+        params: list[Any] = [namespace, property_key]
+        status_filter = ""
+        if status is not None:
+            status_filter = "AND status = ?"
+            params.append(status)
+        rows = self.conn.execute(
+            f"""
+            SELECT *
+            FROM fact_property_index
+            WHERE namespace = ? AND property_key = ? {status_filter}
+            ORDER BY updated_at DESC
+            """,
+            params,
+        ).fetchall()
+        return [
+            FactPropertyIndexEntry(
+                namespace=row["namespace"],
+                property_key=row["property_key"],
+                entity_id=row["entity_id"],
+                predicate=row["predicate"],
+                fact_id=row["fact_id"],
+                status=row["status"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
     def list_nodes(self, namespace: str) -> list[SharedNode]:
         rows = self.conn.execute(
             "SELECT * FROM nodes WHERE namespace = ? ORDER BY rowid",
@@ -150,7 +301,7 @@ class SQLiteStore:
             "SELECT * FROM view_edges WHERE namespace = ? ORDER BY rowid",
             (namespace,),
         ).fetchall()
-        return [_edge_from_row(row) for row in rows]
+        return [_edge_from_row(row, _edge_members(self.conn, row["namespace"], row["edge_id"])) for row in rows]
 
     def get_nodes(self, namespace: str, node_ids: list[str]) -> list[SharedNode]:
         if not node_ids:
@@ -178,7 +329,7 @@ class SQLiteStore:
             """,
             [namespace, *node_ids],
         ).fetchall()
-        return [_edge_from_row(row) for row in rows]
+        return [_edge_from_row(row, _edge_members(self.conn, row["namespace"], row["edge_id"])) for row in rows]
 
     def stats(self, namespace: str) -> dict[str, int]:
         result: dict[str, int] = {}
@@ -186,6 +337,8 @@ class SQLiteStore:
             "nodes": "nodes",
             "edges": "view_edges",
             "triples": "triples",
+            "fact_properties": "fact_property_index",
+            "entity_aliases": "entity_alias_index",
         }.items():
             row = self.conn.execute(
                 f"SELECT COUNT(*) AS count FROM {table} WHERE namespace = ?",
@@ -219,6 +372,11 @@ class SQLiteStore:
                         namespace TEXT NOT NULL,
                         node_id TEXT NOT NULL,
                         node_type TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        superseded_by TEXT,
+                        invalidated_by TEXT,
+                        status_reason TEXT,
+                        status_updated_at TEXT,
                         content TEXT NOT NULL,
                         summary TEXT NOT NULL DEFAULT '',
                         time_json TEXT NOT NULL,
@@ -239,9 +397,10 @@ class SQLiteStore:
                         edge_id TEXT NOT NULL,
                         view TEXT NOT NULL,
                         relation TEXT NOT NULL,
-                        node_ids_json TEXT NOT NULL,
-                        roles_json TEXT NOT NULL,
-                        weights_json TEXT NOT NULL,
+                        edge_key TEXT NOT NULL DEFAULT '',
+                        member_policy TEXT NOT NULL DEFAULT 'immutable',
+                        member_signature TEXT NOT NULL DEFAULT '',
+                        member_version INTEGER NOT NULL DEFAULT 1,
                         time_json TEXT NOT NULL,
                         metadata_json TEXT NOT NULL,
                         PRIMARY KEY (namespace, edge_id)
@@ -268,12 +427,42 @@ class SQLiteStore:
                         subject TEXT NOT NULL,
                         predicate TEXT NOT NULL,
                         object TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        superseded_by TEXT,
+                        invalidated_by TEXT,
                         metadata_json TEXT NOT NULL,
                         PRIMARY KEY (namespace, triple_id)
                     );
 
                     CREATE INDEX IF NOT EXISTS idx_triples_owner
                         ON triples(namespace, owner_node_id);
+
+                    CREATE TABLE IF NOT EXISTS fact_property_index (
+                        namespace TEXT NOT NULL,
+                        property_key TEXT NOT NULL,
+                        entity_id TEXT,
+                        predicate TEXT NOT NULL,
+                        fact_id TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (namespace, property_key, fact_id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_fact_property_lookup
+                        ON fact_property_index(namespace, property_key, status);
+
+                    CREATE TABLE IF NOT EXISTS entity_alias_index (
+                        namespace TEXT NOT NULL,
+                        normalized_alias TEXT NOT NULL,
+                        entity_type TEXT NOT NULL DEFAULT '',
+                        entity_id TEXT NOT NULL,
+                        source_count INTEGER NOT NULL DEFAULT 1,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (namespace, normalized_alias, entity_type)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_entity_alias_lookup
+                        ON entity_alias_index(namespace, normalized_alias, entity_type);
 
                     CREATE TABLE IF NOT EXISTS ingestion_cache (
                         namespace TEXT NOT NULL,
@@ -312,6 +501,11 @@ def _node_from_row(row: sqlite3.Row) -> SharedNode:
         id=row["node_id"],
         namespace=row["namespace"],
         type=row["node_type"],
+        status=row["status"],
+        superseded_by=row["superseded_by"],
+        invalidated_by=row["invalidated_by"],
+        status_reason=row["status_reason"],
+        status_updated_at=row["status_updated_at"],
         content=row["content"],
         summary=row["summary"],
         time=TimeBundle.model_validate(_from_json(row["time_json"], {})),
@@ -321,16 +515,34 @@ def _node_from_row(row: sqlite3.Row) -> SharedNode:
     )
 
 
-def _edge_from_row(row: sqlite3.Row) -> ViewEdge:
+def _edge_from_row(row: sqlite3.Row, members: list[sqlite3.Row]) -> ViewEdge:
+    node_ids = [member["node_id"] for member in members]
+    roles = {member["node_id"]: member["role"] for member in members if member["role"] is not None}
+    weights = {member["node_id"]: float(member["weight"]) for member in members}
     return ViewEdge(
         id=row["edge_id"],
         namespace=row["namespace"],
         view=row["view"],
         relation=row["relation"],
-        node_ids=_from_json(row["node_ids_json"], []),
-        roles=_from_json(row["roles_json"], {}),
-        weights=_from_json(row["weights_json"], {}),
+        edge_key=row["edge_key"],
+        member_policy=row["member_policy"],
+        member_signature=row["member_signature"],
+        member_version=int(row["member_version"]),
+        node_ids=node_ids,
+        roles=roles,
+        weights=weights,
         time=TimeBundle.model_validate(_from_json(row["time_json"], {})),
         metadata=_from_json(row["metadata_json"], {}),
     )
 
+
+def _edge_members(conn: sqlite3.Connection, namespace: str, edge_id: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT node_id, role, weight
+        FROM view_edge_members
+        WHERE namespace = ? AND edge_id = ?
+        ORDER BY rowid
+        """,
+        (namespace, edge_id),
+    ).fetchall()

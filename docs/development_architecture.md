@@ -48,6 +48,8 @@ c_hypermem/adapters/agent_memory_eval.py
 
 这个模块不得被 `c_hypermem.memory`、`schema`、`pipeline`、`retrieval` 等核心模块导入；它只能反向消费核心公开 API。
 
+注意：开发过程禁止使用任何规则化抽取策略或是兜底策略。在项目架构更新时无需考虑旧数据的兼容。
+
 ## 1. 总体分层
 
 ```text
@@ -303,7 +305,64 @@ Prompt 管理要求：
 - prompt 修改必须改变 prompt hash，并参与 `prompt_template_hash`。
 - 缓存策略中的 `prompt_template_hash` 应由启用的 prompt 文件内容和版本共同计算。
 - prompt 文件可以包含输出 schema，但不应要求模型生成系统主键。
+- 面向 LLM 的 prompt 不应提及“超图”“高阶边”“视角边”“节点权重”等内部实现概念。
+- LLM 输出字段应保持短小，只抽取事实、事件、实体、属性、角色、三元组和来源片段。
+- LLM 不输出 `confidence`、`salience`、`weight`；这类指标由系统后续根据抽取次数、来源数量、访问次数、时间衰减等计算。
 - Python 中只保留 prompt loader、template renderer 和 schema validator，不保存长 prompt 文本。
+
+### 2.3 LLM-facing Prompt 原则
+
+给模型的任务描述应使用自然语言信息抽取语义，而不是让模型“构建超图”。例如：
+
+```text
+推荐：
+  Extract entities, events, facts, attributes, roles, and simple triples from the text.
+
+避免：
+  Build a hypergraph with hyperedges, node weights, and graph structure.
+```
+
+原因：
+
+- “超图”对模型来说是抽象实现概念，容易被不同模型理解成不同结构。
+- 让模型生成图结构、权重或置信度会增加字段复杂度和 hallucination 风险。
+- C-HyperMem 的结构应由系统根据候选语义单元确定性组装。
+
+推荐 prompt 输出保持最小 JSON：
+
+```json
+{
+  "entities": [
+    {"name": "Alice", "type": "person", "aliases": []}
+  ],
+  "events": [
+    {"summary": "Alice discussed interview scheduling.", "time": "2024-01-03"}
+  ],
+  "facts": [
+    {"subject": "Alice", "predicate": "prefers", "object": "morning interviews"}
+  ],
+  "attributes": [
+    {"entity": "Alice", "name": "preference", "value": "morning interviews"}
+  ],
+  "roles": [
+    {"event": "Alice discussed interview scheduling.", "entity": "Alice", "role": "speaker"}
+  ],
+  "triples": [
+    {"subject": "Alice", "predicate": "prefers", "object": "morning interviews"}
+  ],
+  "sources": [
+    {"text": "Alice prefers morning interviews.", "ref": "assistant_output"}
+  ]
+}
+```
+
+系统后处理负责：
+
+- 生成所有 canonical id。
+- 合并重复实体和事实。
+- 判断哪些事实进入哪些关系视角。
+- 计算节点/边权重。
+- 建立 `SharedNodes`、`MultiViewEdges` 和 `LocalNodeGraphs`。
 
 ## 3. 对外 API
 
@@ -471,9 +530,10 @@ LLM 可以输出：
 - 实体别名。
 - 事实内容。
 - subject / predicate / object。
-- 关系类型。
-- 视角解释。
-- 置信度或 salience。
+- 属性名和值。
+- 事件摘要。
+- 事件中的实体角色。
+- 原文来源片段或 source reference。
 
 LLM 不应输出或决定：
 
@@ -483,13 +543,16 @@ LLM 不应输出或决定：
 - `triple_id`
 - namespace
 - storage primary key
+- node weight / edge weight
+- confidence / salience
+- hypergraph structure
 
 推荐由 `utils/ids.py` 提供统一 ID 工具：
 
 ```python
 make_node_id(namespace, node_type, stable_key) -> str
 make_entity_id(namespace, canonical_name, entity_type, disambiguators=None) -> str
-make_edge_id(namespace, view, relation, member_ids, roles=None) -> str
+make_edge_id(namespace, view, relation, edge_key) -> str
 make_triple_id(namespace, owner_node_id, subject, predicate, object, qualifiers=None) -> str
 ```
 
@@ -498,11 +561,145 @@ ID 可以采用确定性 hash：
 ```text
 node:{type}:{hash(namespace + type + stable_key)}
 entity:{hash(namespace + canonical_name + entity_type + disambiguators)}
-edge:{view}:{hash(namespace + view + relation + sorted(member_ids + roles))}
 triple:{hash(namespace + owner_node_id + normalized_spo + qualifiers)}
 ```
 
 也可以在需要保留插入顺序时使用 ULID/UUIDv7，但应由系统生成，并保存 `dedupe_key` 支持合并。
+
+### 3.5 统一高阶边 ID 策略
+
+高阶边 ID 建议统一为“稳定边实例 ID”，不要从当前成员集合计算。成员集合是边的状态，可能追加、修正或退役；如果 `edge_id` 依赖 `sorted(member_ids)`，任何成员变化都会导致 ID 变化，进而丢失访问次数、生命周期时间、历史 metadata 和调试链路。
+
+统一规则：
+
+```text
+edge_id = hash(namespace + view + relation + edge_key)
+```
+
+其中 `edge_key` 是边的稳定锚点，而不是成员集合。
+
+不同视角的 `edge_key` 可以这样选择：
+
+```text
+provenance_view:
+  edge_key = event_id + ":provenance"
+
+tool evidence edge:
+  edge_key = tool_call_id + ":evidence"
+
+topic_or_intent_view:
+  edge_key = "topic:" + normalized_topic_name
+
+task_or_plan_view:
+  edge_key = "plan:" + normalized_plan_name
+
+preference_profile_view:
+  edge_key = "profile:" + normalized_profile_name
+
+entity_state_view:
+  edge_key = entity_id + ":" + state_type
+```
+
+成员集合用于单独的签名和版本，不参与 `edge_id`：
+
+```text
+member_signature = hash(sorted(member_ids + roles))
+member_version = member_version + 1 when membership changes
+```
+
+边更新时：
+
+```text
+edge_id 不变
+view_edge_members 增删成员
+view_edges.member_signature 更新
+view_edges.member_version 增加
+view_edges.updated_at 更新
+edge access_count / historical metadata 保留
+```
+
+`member_policy` 只控制成员是否允许变化，不影响 ID 策略：
+
+```text
+immutable:
+  一般不追加成员；如果发现抽取错误，可创建新 member_version 或记录 correction
+
+appendable:
+  可持续追加成员，例如 topic / plan / profile
+
+versioned:
+  成员变化需要保留历史版本，适合状态变化敏感的视角
+```
+
+推荐字段：
+
+```python
+{
+    "edge_id": "edge:...",
+    "edge_key": "topic:nate_tournaments",
+    "member_policy": "immutable|appendable|versioned",
+    "member_signature": "sha256:...",
+    "member_version": 3
+}
+```
+
+### 3.6 实体别名对齐先于 ID 生成
+
+实体 ID 生成前必须先做轻量级 entity resolution。系统不应在模型抽取到新实体名称后立刻 hash 生成新 `entity_id`。
+
+推荐流程：
+
+```text
+candidate entity name from LLM
+  -> normalize name
+  -> search existing EntityNode pool
+  -> if exact / alias / normalized match:
+       reuse existing entity_id
+       optionally append new alias/source
+     else:
+       generate new entity_id from canonical_name
+       create new EntityNode
+```
+
+第一版可以只做轻量字符串匹配：
+
+- `canonical_name` 精确匹配。
+- `display_name` 规范化后匹配。
+- `aliases` 规范化后匹配。
+- 同一 conversation / namespace 下的大小写、空格、标点归一。
+- 可选加入 entity_type 约束，避免同名不同类型实体误合并。
+
+建议维护实体别名索引：
+
+```text
+entity_alias_index
+  namespace
+  normalized_alias
+  entity_type
+  entity_id
+```
+
+伪代码：
+
+```python
+def resolve_entity_id(namespace, name, entity_type=None, aliases=None):
+    normalized_names = normalize_aliases([name, *(aliases or [])])
+    hit = entity_store.find_by_alias(namespace, normalized_names, entity_type=entity_type)
+    if hit:
+        entity_store.add_aliases(hit.entity_id, normalized_names)
+        return hit.entity_id
+
+    canonical_name = choose_canonical_name(name, aliases)
+    entity_id = make_entity_id(namespace, canonical_name, entity_type)
+    entity_store.create(entity_id, canonical_name, aliases=normalized_names, entity_type=entity_type)
+    return entity_id
+```
+
+后续可以扩展：
+
+- embedding 相似度召回候选实体。
+- 局部上下文消歧，例如同名人物、同名项目。
+- 必要时调用 LLM 做二选一消歧，但 LLM 仍然只做判断，不生成 `entity_id`。
 
 实体尤其需要区分：
 
@@ -517,7 +714,7 @@ triple:{hash(namespace + owner_node_id + normalized_spo + qualifiers)}
 }
 ```
 
-其中 `canonical_name` 和 `aliases` 可以由模型辅助抽取，但 `entity_id` 必须由系统根据规范化结果生成。
+其中 `canonical_name` 和 `aliases` 可以由模型辅助抽取，但 `entity_id` 必须由系统在别名对齐后复用或生成。
 
 `search()` 返回值使用普通 dict，方便 adapter 转成 `MemoryItem`：
 
@@ -691,19 +888,18 @@ access node during search:
     "namespace": "sample_001",
     "view": "entity_state_view",
     "relation": "state_of_entity",
+    "edge_key": "entity:andrew:pet_ownership",
+    "member_policy": "appendable",
+    "member_signature": "sha256:...",
+    "member_version": 3,
     "node_ids": ["entity:andrew", "fact:andrew_has_pet_toby", "event:S1:0"],
     "roles": {
         "entity:andrew": "subject",
         "fact:andrew_has_pet_toby": "state_fact",
         "event:S1:0": "evidence_event"
     },
-    "weights": {
-        "entity:andrew": 1.0,
-        "fact:andrew_has_pet_toby": 0.9,
-        "event:S1:0": 0.6
-    },
     "metadata": {
-        "created_by": "llm|heuristic",
+        "created_by": "system",
         "reason": "...",
         "created_turn": 17
     },
@@ -727,6 +923,12 @@ access node during search:
 
 边级 `world.valid_time` 是可选的，只在“这个视角关系本身有真实世界有效期”时使用。例如 `entity_state_view` 中“Andrew 拥有 Toby”可以有有效期；`provenance_view` 通常不需要世界有效期，只需要生命周期时间。
 
+边 ID 生成必须遵守：
+
+- `edge_id` 只由稳定 `edge_key` 生成。
+- `node_ids` 变化只更新 `member_signature` 和 `member_version`，不改变 `edge_id`。
+- `member_policy` 控制成员变化策略，但不改变 ID 生成方式。
+
 第一版建议实现这些视角：
 
 - `provenance_view`：连接 turn、event、fact，保留来源。
@@ -748,17 +950,14 @@ access node during search:
             "object": "Toby",
             "qualifiers": {
                 "valid_time": {"start": "2023-07-11", "end": null},
-                "source_event_id": "event:S1:0",
-                "confidence": 0.84
+                "source_event_id": "event:S1:0"
             }
         },
         {
             "subject": "Toby",
             "predicate": "is_a",
             "object": "dog",
-            "qualifiers": {
-                "confidence": 0.95
-            }
+            "qualifiers": {}
         }
     ],
     "attributes": {
@@ -773,7 +972,7 @@ access node during search:
 
 外层 `ViewEdge` 表达高阶关联；内层 `LocalNodeGraph` 表达节点自身的属性、角色、三元组和局部语义。
 
-局部图谱中的三元组可以携带 `qualifiers.valid_time`，但不建议复制节点的完整生命周期时间。生命周期由 owner node 管理；三元组只保存自身语义成立所需的限定信息。
+局部图谱中的三元组可以携带 `qualifiers.valid_time`，但不建议复制节点的完整生命周期时间。生命周期由 owner node 管理；三元组只保存自身语义成立所需的限定信息。置信度、权重、重要性等指标由系统后续计算，不要求 LLM 输出。
 
 ## 5. 写入 Pipeline
 
@@ -786,17 +985,21 @@ add_memory(user_input, assistant_output, namespace, metadata, tool_calls, ...)
   3. select changed/new interaction span
   4. extract candidate nodes / triples / relations
   5. normalize candidate keys
-  6. generate system-controlled ids
-  7. build TurnNode[]
-  8. build EventNode
-  9. extract FactNode[]
-  10. link / merge EntityNode[]
-  11. build LocalNodeGraph for selected nodes
-  12. project nodes into enabled views
-  13. write SharedNodes
-  14. write ViewEdges
-  15. update lexical / vector indexes
-  16. update ingestion cache cursor
+  6. resolve entity aliases against existing EntityNode pool
+  7. retrieve existing facts/triples with same entity + property key
+  8. detect duplicate / update / conflict
+  9. retire or invalidate old facts when needed
+  10. generate system-controlled ids for unresolved nodes / edges / triples
+  11. build TurnNode[]
+  12. build EventNode
+  13. extract FactNode[]
+  14. link / merge EntityNode[]
+  15. build LocalNodeGraph for selected nodes
+  16. project nodes into enabled views
+  17. write SharedNodes
+  18. write ViewEdges
+  19. update lexical / vector indexes
+  20. update ingestion cache cursor
 ```
 
 ### 5.1 输入规范化
@@ -919,14 +1122,97 @@ append_only:
 
 因此 append-only 不代表只写新节点，还需要允许维护旧节点：
 
-- 新事实与旧事实冲突时，更新旧 fact 的 `status` 或 `valid_time.end`。
+- 新事实与旧事实冲突时，不物理覆盖旧 fact，而是将旧 fact 标记为 `retired` / `invalidated`，并保留新 fact。
 - 新事实补充旧事件时，可以更新旧 EventNode 的 `local_graph`。
 - 新实体消歧后，可以重连相关 `ViewEdge`。
 - 新主题形成后，可以把旧 fact 挂到新的 `topic_or_intent_view`。
 
 也就是说，缓存策略减少“输入读取和重复抽取”，但不禁止“对旧图结构做必要维护”。
 
-### 5.5 第一版降级策略
+### 5.5 冲突事实退役策略
+
+对于增量写入，系统必须在写入新事实前检索旧事实和局部三元组，尤其是同一实体、同一属性或同一谓词的记录。
+
+示例：
+
+```text
+旧事实:
+  [Toby, is_a, dog]
+
+新消息:
+  "Toby my cat"
+
+新事实:
+  [Toby, is_a, cat]
+```
+
+如果系统只处理新增消息并直接写入，就会同时保留 `[Toby, is_a, dog]` 和 `[Toby, is_a, cat]` 两条矛盾事实。因此写入前需要构造 property key：
+
+```text
+property_key = normalized_entity_id + ":" + normalized_predicate_or_attribute
+```
+
+然后检索：
+
+```text
+existing facts where property_key = "entity:toby:is_a"
+existing triples where owner/entity = "entity:toby" and predicate = "is_a"
+```
+
+推荐决策：
+
+```text
+same value:
+  merge source / extraction_count，不创建重复事实
+
+compatible value:
+  append as additional fact，例如 aliases、多个爱好、多个参与者
+
+conflicting value:
+  create new FactNode
+  mark old FactNode status = retired 或 invalidated
+  set old.valid_time.end if new fact has effective time
+  create relation: new_fact --supersedes/invalidates--> old_fact
+  update LocalNodeGraph: old triple retired, new triple active
+```
+
+不建议物理覆盖旧节点，原因：
+
+- 保留历史可追溯性。
+- 支持 temporal / as-of 问题。
+- 保留原始来源和调试证据。
+- 避免误判冲突时不可恢复。
+
+建议 FactNode 增加状态字段：
+
+```python
+{
+    "status": "active|retired|invalidated|uncertain",
+    "superseded_by": "fact:new_fact_id",
+    "invalidated_by": "fact:new_fact_id",
+    "status_reason": "newer conflicting fact for the same entity/property",
+    "status_updated_at": "2026-05-22T12:00:00"
+}
+```
+
+LocalNodeGraph 中的 triple 也应支持局部状态：
+
+```python
+{
+    "subject": "Toby",
+    "predicate": "is_a",
+    "object": "dog",
+    "qualifiers": {
+        "status": "retired",
+        "retired_by": "triple:new_triple_id",
+        "valid_time": {"start": null, "end": "2026-05-22"}
+    }
+}
+```
+
+LLM 可以参与“是否矛盾”的二选一判断，但系统必须提供候选旧事实；不能只让 LLM 看新增上下文就直接写库。
+
+### 5.6 第一版降级策略
 
 为尽快跑通评测，M1 可以采用保守实现：
 
@@ -1002,6 +1288,9 @@ nodes
   namespace
   node_id
   node_type
+  status
+  superseded_by
+  invalidated_by
   content
   summary
   absolute_time_json
@@ -1014,6 +1303,10 @@ view_edges
   edge_id
   view
   relation
+  edge_key
+  member_policy
+  member_signature
+  member_version
   metadata_json
 
 view_edge_members
@@ -1025,11 +1318,32 @@ view_edge_members
 
 triples
   namespace
+  triple_id
   owner_node_id
   subject
   predicate
   object
+  status
+  superseded_by
+  invalidated_by
   metadata_json
+
+fact_property_index
+  namespace
+  property_key
+  entity_id
+  predicate
+  fact_id
+  status
+  updated_at
+
+entity_alias_index
+  namespace
+  normalized_alias
+  entity_type
+  entity_id
+  source_count
+  updated_at
 
 ingestion_cache
   namespace

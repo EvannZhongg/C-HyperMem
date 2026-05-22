@@ -31,13 +31,16 @@ def make_edge_id(
     namespace: str,
     view: str,
     relation: str,
-    member_ids: list[str],
-    roles: dict[str, str] | None = None,
+    edge_key: str,
 ) -> str:
-    members = sorted(member_ids)
-    role_items = sorted((roles or {}).items())
-    digest = stable_hash(namespace, view, relation, members, role_items)
+    digest = stable_hash(namespace, view, relation, compact_key(edge_key))
     return f"edge:{view}:{digest}"
+
+
+def make_member_signature(member_ids: list[str], roles: dict[str, str] | None = None) -> str:
+    role_items = sorted((roles or {}).items())
+    digest = stable_hash(sorted(member_ids), role_items, length=64)
+    return f"sha256:{digest}"
 
 
 def make_triple_id(
@@ -65,4 +68,3 @@ def _canonical(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_canonical(item) for item in value]
     return value
-

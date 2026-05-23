@@ -103,15 +103,11 @@ Return exactly one JSON object:
 - `polarity`: one of `positive`, `negative`, `neutral`, or `unknown`.
 - `source_ref`: point to the message or source snippet that supports the item.
 
-# Do Not Output
+# Core Principles
 
-Do not output:
-
-- `node_id`, `edge_id`, `entity_id`, `triple_id`, fingerprints, storage keys, or
-  namespaces;
-- confidence, salience, importance, rank, score, or weight;
-- hyperedges, edge clusters, graph views, member roles, or graph structure;
-- chain-of-thought or explanations outside the JSON object.
+- **Information over Structure:** Focus ONLY on extracting natural language semantics (who, what, when, properties, relationships). DO NOT output system identifiers (e.g., node_id, edge_id, triple_id), scores, confidence metrics, or outer hypergraph structures.
+- **Single Source of Truth:** Use `assertions` as the ONLY carrier for facts, attributes, rules, and triples. Do not duplicate the same fact across different arrays.
+- **Contextual Completeness:** If an event or assertion relies on implicit context (e.g., "he", "it", "next week"), resolve the pronouns and relative times to absolute, explicit entities and timestamps where possible.
 
 # Dynamic Input
 

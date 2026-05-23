@@ -134,7 +134,7 @@ def _render_node_labels(config: MemoryConfig) -> str:
         description = policy.description or "No description provided."
         rows.append(f"- {label}: {description}")
     if config.node_labels.default_policy.description:
-        rows.append(f"- default_policy: {config.node_labels.default_policy.description}")
+        rows.append(f"- Other precise labels are allowed: {config.node_labels.default_policy.description}")
     return "\n".join(rows) or "No configured labels."
 
 

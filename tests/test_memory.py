@@ -11,6 +11,7 @@ from c_hypermem import Memory
 from c_hypermem.config import MemoryConfig
 from c_hypermem.embeddings import EmbeddingModelClient
 from c_hypermem.errors import IngestionNotConfiguredError
+from c_hypermem.pipeline.extraction import _render_node_labels
 from c_hypermem.schema import MemoryExtraction
 from c_hypermem.utils.prompts import PromptRegistry
 
@@ -141,6 +142,14 @@ def test_maintenance_prompt_registry_loads_edge_prompts():
     assert registry.load("maintenance.edge_merge").hash.startswith("sha256:")
     assert registry.load("maintenance.edge_cluster_merge").hash.startswith("sha256:")
     assert registry.load("maintenance.edge_conflict_check").hash.startswith("sha256:")
+
+
+def test_default_policy_is_not_rendered_as_prompt_label():
+    config = MemoryConfig.load("configs/default.yaml")
+    rendered = _render_node_labels(config)
+
+    assert "default_policy" not in rendered
+    assert "Other precise labels are allowed" in rendered
 
 
 def test_conflicting_fact_retires_old_fact_and_adds_correction_edge(tmp_path):

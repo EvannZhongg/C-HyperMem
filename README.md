@@ -3,6 +3,7 @@
 ## 快速开始
 
 ```powershell
+git clone https://github.com/EvannZhongg/C-HyperMem.git
 cd C-HyperMem
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1

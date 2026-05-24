@@ -1,23 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from c_hypermem.config import RetrievalConfig
 from c_hypermem.retrieval.context import compose_result_content
+from c_hypermem.retrieval.expansion import Candidate, EdgeExpansion
 from c_hypermem.retrieval.query_analysis import QueryAnalyzer, QueryAnalysis
-from c_hypermem.schema import HyperEdge, MemoryNode, SearchResult
+from c_hypermem.schema import MemoryNode, SearchResult
 from c_hypermem.stores.base import MemoryStore
 from c_hypermem.stores.lexical_store import LexicalScorer
 from c_hypermem.utils.time import decay_weight
-
-
-@dataclass
-class Candidate:
-    node: MemoryNode
-    score: float
-    score_parts: dict[str, float] = field(default_factory=dict)
-    edge_ids: set[str] = field(default_factory=set)
-    edge_types: set[str] = field(default_factory=set)
 
 
 class Retriever:
@@ -26,6 +16,7 @@ class Retriever:
         self.config = config
         self.analyzer = QueryAnalyzer()
         self.lexical = LexicalScorer()
+        self.expansion = EdgeExpansion(store, config)
 
     def search(
         self,
@@ -47,41 +38,11 @@ class Retriever:
             self._apply_structural_scores(candidate, analysis, current_turn)
 
         if self.config.use_hyperedge_expansion and candidates:
-            self._expand_candidates(namespace, candidates)
+            self.expansion.expand(namespace, candidates)
 
         preferred = self._prefer_answer_nodes(candidates.values(), analysis)
         ranked = sorted(preferred, key=lambda item: item.score, reverse=True)[:top_k]
         return [self._to_result(candidate) for candidate in ranked]
-
-    def _expand_candidates(self, namespace: str, candidates: dict[str, Candidate]) -> None:
-        seed_ids = list(candidates.keys())
-        edges = self.store.get_incident_edges(namespace, seed_ids)[: self.config.edge_top_n]
-        expanded_ids: list[str] = []
-        for edge in edges:
-            for seed_id in seed_ids:
-                if seed_id in edge.node_ids and seed_id in candidates:
-                    candidates[seed_id].edge_ids.add(edge.edge_id)
-                    candidates[seed_id].edge_types.add(edge.edge_type)
-                    candidates[seed_id].score += 0.15
-                    candidates[seed_id].score_parts["edge_coherence"] = (
-                        candidates[seed_id].score_parts.get("edge_coherence", 0.0) + 0.15
-                    )
-            expanded_ids.extend(
-                node_id
-                for node_id in edge.node_ids
-                if node_id not in candidates and _expandable_role(edge, node_id)
-            )
-
-        expanded_nodes = self.store.get_nodes(namespace, list(dict.fromkeys(expanded_ids)))
-        for node in expanded_nodes:
-            candidate = candidates.setdefault(node.node_id, Candidate(node=node, score=0.0))
-            incident = [edge for edge in edges if node.node_id in edge.node_ids]
-            for edge in incident:
-                candidate.edge_ids.add(edge.edge_id)
-                candidate.edge_types.add(edge.edge_type)
-            expansion_score = 0.35 + min(len(candidate.edge_types), 3) * 0.1
-            candidate.score += expansion_score
-            candidate.score_parts["edge_expansion"] = candidate.score_parts.get("edge_expansion", 0.0) + expansion_score
 
     def _apply_structural_scores(
         self,
@@ -152,19 +113,6 @@ class Retriever:
             score=float(candidate.score),
             metadata=metadata,
         )
-
-
-def _expandable_role(edge: HyperEdge, node_id: str) -> bool:
-    role = edge.roles.get(node_id, "")
-    return role in {
-        "derived_fact",
-        "state_fact",
-        "evidence_event",
-        "time_member",
-        "topic_evidence",
-        "preference_evidence",
-    }
-
 
 def _has_label(node: MemoryNode, label: str) -> bool:
     return label in node.node_labels

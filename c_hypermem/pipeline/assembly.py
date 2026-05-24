@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from c_hypermem.config import MemoryConfig
+from c_hypermem.llms.base import LLMClient
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.edge_cluster_builder import BasicEdgeClusterBuilder
 from c_hypermem.pipeline.entity_resolution import EntityResolver
@@ -34,18 +35,18 @@ class GraphAssembler:
     """Coordinate extracted candidates into graph components.
 
     Entity resolution, MemoryNode construction, LocalNodeGraph construction and
-    deterministic graph maintenance live in dedicated helpers; this class keeps
+    semantic graph maintenance live in dedicated helpers; this class keeps
     the write-time assembly order in one place.
     """
 
-    def __init__(self, config: MemoryConfig, store: MemoryStore) -> None:
+    def __init__(self, config: MemoryConfig, store: MemoryStore, *, maintenance_llm: LLMClient | None = None) -> None:
         self.config = config
         self.store = store
         self.entity_resolver = EntityResolver(store)
         self.node_builder = NodeBuilder()
         self.hyperedge_builder = BasicHyperEdgeBuilder(config)
-        self.edge_cluster_builder = BasicEdgeClusterBuilder(config)
-        self.maintenance = GraphMaintenance(store)
+        self.edge_cluster_builder = BasicEdgeClusterBuilder(config, store)
+        self.maintenance = GraphMaintenance(store, llm=maintenance_llm)
 
     def assemble(self, extraction: MemoryExtraction, context: AssemblyContext) -> tuple[
         list[MemoryNode],
@@ -134,10 +135,12 @@ class GraphAssembler:
         clusters: list[EdgeCluster] = []
         cluster_members: list[EdgeClusterMember] = []
         if self.config.edge_clusters.enabled:
-            for edge in edges:
-                cluster, member = self.edge_cluster_builder.build_for_edge(edge, context)
-                clusters.append(cluster)
-                cluster_members.append(member)
+            clusters, cluster_members = self.edge_cluster_builder.build(
+                edges,
+                namespace=context.namespace,
+                metadata=context.metadata,
+                current_turn=context.current_turn,
+            )
 
         alias_entries = self._alias_entries(context.namespace, aliases_by_node_id, entity_types_by_node_id)
         return (

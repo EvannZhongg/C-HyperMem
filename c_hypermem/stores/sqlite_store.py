@@ -445,6 +445,21 @@ class SQLiteStore:
             ).fetchall()
         return [_cluster_member_from_row(row) for row in rows]
 
+    def find_edge_cluster_by_fingerprint(self, namespace: str, cluster_fingerprint: str) -> EdgeCluster | None:
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM edge_clusters
+            WHERE namespace = ? AND cluster_fingerprint = ?
+            ORDER BY rowid
+            LIMIT 1
+            """,
+            (namespace, cluster_fingerprint),
+        ).fetchone()
+        if not row:
+            return None
+        return _cluster_from_row(row)
+
     def get_nodes(self, namespace: str, node_ids: list[str]) -> list[MemoryNode]:
         if not node_ids:
             return []

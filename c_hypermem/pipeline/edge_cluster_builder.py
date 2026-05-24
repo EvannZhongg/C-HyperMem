@@ -6,6 +6,7 @@ from c_hypermem.config import MemoryConfig
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.graph_utils import source_metadata
 from c_hypermem.schema import EdgeCluster, EdgeClusterMember, EdgeDescriptionVariant, HyperEdge
+from c_hypermem.stores.base import MemoryStore
 from c_hypermem.utils.ids import make_cluster_id, make_fingerprint
 from c_hypermem.utils.text import compact_key
 
@@ -24,10 +25,11 @@ class EdgeClusterBuilder(Protocol):
 
 
 class BasicEdgeClusterBuilder:
-    """Build M1 EdgeClusters from concrete HyperEdges."""
+    """Attach concrete HyperEdges to stable topic clusters."""
 
-    def __init__(self, config: MemoryConfig) -> None:
+    def __init__(self, config: MemoryConfig, store: MemoryStore | None = None) -> None:
         self.config = config
+        self.store = store
 
     def build(
         self,
@@ -38,18 +40,62 @@ class BasicEdgeClusterBuilder:
         current_turn: int,
     ) -> tuple[list[EdgeCluster], list[EdgeClusterMember]]:
         context = AssemblyContext(namespace=namespace, metadata=metadata, current_turn=current_turn)
-        clusters: list[EdgeCluster] = []
+        clusters_by_fingerprint: dict[str, EdgeCluster] = {}
+        new_clusters_by_id: dict[str, EdgeCluster] = {}
         members: list[EdgeClusterMember] = []
         for edge in edges:
-            cluster, member = self.build_for_edge(edge, context)
-            clusters.append(cluster)
+            cluster, member, created = self._build_for_edge(edge, context, clusters_by_fingerprint)
+            if created:
+                new_clusters_by_id[cluster.cluster_id] = cluster
+            clusters_by_fingerprint[cluster.cluster_fingerprint] = cluster
             members.append(member)
-        return clusters, members
+        return list(new_clusters_by_id.values()), members
 
     def build_for_edge(self, edge: HyperEdge, context: AssemblyContext) -> tuple[EdgeCluster, EdgeClusterMember]:
+        cluster, member, _ = self._build_for_edge(edge, context, {})
+        return cluster, member
+
+    def _build_for_edge(
+        self,
+        edge: HyperEdge,
+        context: AssemblyContext,
+        batch_clusters: dict[str, EdgeCluster],
+    ) -> tuple[EdgeCluster, EdgeClusterMember, bool]:
         label = edge_cluster_label(edge)
         cluster_description = cluster_description_for_edge(edge)
-        cluster_fingerprint = make_fingerprint(cluster_description, {"cluster_label": label})
+        cluster_fingerprint = cluster_fingerprint_for_edge(edge, label, cluster_description)
+        cluster, created = self._get_or_create_cluster(
+            edge,
+            context,
+            label,
+            cluster_description,
+            cluster_fingerprint,
+            batch_clusters,
+        )
+        member = EdgeClusterMember(
+            namespace=context.namespace,
+            cluster_id=cluster.cluster_id,
+            edge_id=edge.edge_id,
+            relation_to_cluster="updates" if edge.edge_type == "correction" else "supports",
+        )
+        return cluster, member, created
+
+    def _get_or_create_cluster(
+        self,
+        edge: HyperEdge,
+        context: AssemblyContext,
+        label: str,
+        cluster_description: str,
+        cluster_fingerprint: str,
+        batch_clusters: dict[str, EdgeCluster],
+    ) -> tuple[EdgeCluster, bool]:
+        batch_cluster = batch_clusters.get(cluster_fingerprint)
+        if batch_cluster is not None:
+            return batch_cluster, False
+        if self.store is not None:
+            existing = self.store.find_edge_cluster_by_fingerprint(context.namespace, cluster_fingerprint)
+            if existing is not None:
+                return existing, False
         cluster = EdgeCluster(
             cluster_id=make_cluster_id(context.namespace, cluster_fingerprint),
             namespace=context.namespace,
@@ -61,13 +107,21 @@ class BasicEdgeClusterBuilder:
             description_variants=[EdgeDescriptionVariant(text=edge.description, source_edge_id=edge.edge_id)],
             metadata=source_metadata(context, source_ref=edge.edge_type),
         )
-        member = EdgeClusterMember(
-            namespace=context.namespace,
-            cluster_id=cluster.cluster_id,
-            edge_id=edge.edge_id,
-            relation_to_cluster="updates" if edge.edge_type == "correction" else "supports",
+        return cluster, True
+
+
+def cluster_fingerprint_for_edge(edge: HyperEdge, label: str, cluster_description: str) -> str:
+    hint = edge.metadata.get("cluster_hint")
+    if isinstance(hint, dict) and hint:
+        return make_fingerprint(
+            str(hint.get("kind") or label),
+            {
+                "cluster_label": label,
+                "subject_node_id": hint.get("subject_node_id"),
+                "predicate": hint.get("predicate"),
+            },
         )
-        return cluster, member
+    return make_fingerprint(cluster_description, {"cluster_label": label})
 
 
 def edge_cluster_label(edge: HyperEdge) -> str:

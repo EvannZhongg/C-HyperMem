@@ -4,6 +4,8 @@ from typing import Any
 
 from c_hypermem.config import MemoryConfig
 from c_hypermem.errors import IngestionNotConfiguredError
+from c_hypermem.llms.base import LLMClient
+from c_hypermem.llms.openai_compatible import OpenAICompatibleLLM
 from c_hypermem.pipeline.assembly import GraphAssembler
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.edge_cluster_builder import EdgeClusterBuilder
@@ -24,11 +26,14 @@ class IngestionPipeline:
         extractor: MemoryExtractor | None = None,
         hyperedge_builder: HyperEdgeBuilder | None = None,
         edge_cluster_builder: EdgeClusterBuilder | None = None,
+        maintenance_llm: LLMClient | None = None,
     ) -> None:
         self.config = config
         self.store = store
         self.extractor = extractor
-        self.assembler = GraphAssembler(config, store)
+        if maintenance_llm is None and config.llm is not None:
+            maintenance_llm = OpenAICompatibleLLM(config.llm)
+        self.assembler = GraphAssembler(config, store, maintenance_llm=maintenance_llm)
         self.local_graph_builder = LocalGraphBuilder()
         self.hyperedge_builder = hyperedge_builder
         self.edge_cluster_builder = edge_cluster_builder

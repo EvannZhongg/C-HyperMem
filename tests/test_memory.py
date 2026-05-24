@@ -14,9 +14,10 @@ from c_hypermem.errors import IngestionNotConfiguredError
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.entity_resolution import EntityResolution
 from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
-from c_hypermem.pipeline.maintenance import GraphMaintenance, is_conflict
+from c_hypermem.pipeline.maintenance import GraphMaintenance
 from c_hypermem.pipeline.node_builder import NodeBuilder, collect_entities
 from c_hypermem.pipeline.extraction import ExtractionContext, LLMMemoryExtractor, _render_node_labels
+from c_hypermem.retrieval.expansion import EdgeExpansion
 from c_hypermem.schema import ExtractedAssertion, ExtractedEntity, MemoryExtraction
 from c_hypermem.utils.prompts import PromptRegistry
 
@@ -217,6 +218,17 @@ def test_conflicting_fact_retires_old_fact_and_adds_correction_edge(tmp_path):
     memory = Memory.from_config(
         {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
         extractor=extractor,
+        maintenance_llm=MaintenanceLLM(
+            [
+                {
+                    "conflict_state": "contradiction",
+                    "affected_existing_refs": ["existing:0"],
+                    "recommended_old_status": "retired",
+                    "valid_time_update": {"old_end": "2024-01-04"},
+                    "rationale": "The new species replaces the old species for the same pet.",
+                }
+            ]
+        ),
     )
     namespace = "conflict_ns"
     memory.reset(namespace)
@@ -233,6 +245,67 @@ def test_conflicting_fact_retires_old_fact_and_adds_correction_edge(tmp_path):
     assert retired[0].attributes["object"] == "dog"
     assert any(edge.edge_type == "correction" for edge in edges)
     assert stats["fact_properties"] == 2
+
+
+def test_edge_cluster_builder_reuses_existing_property_cluster(tmp_path):
+    extractor = SequenceExtractor(
+        [
+            {
+                "entities": [{"name": "Alice"}],
+                "assertions": [{"subject": "Alice", "predicate": "loves", "object": "tea"}],
+            },
+            {
+                "entities": [{"name": "Alice"}],
+                "assertions": [{"subject": "Alice", "predicate": "loves", "object": "coffee"}],
+            },
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=extractor,
+        maintenance_llm=MaintenanceLLM(
+            [
+                {
+                    "conflict_state": "compatible",
+                    "affected_existing_refs": [],
+                    "recommended_old_status": "active",
+                    "valid_time_update": {},
+                    "rationale": "A person can love both tea and coffee.",
+                }
+            ]
+        ),
+    )
+    namespace = "cluster_reuse_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice loves tea.", namespace=namespace)
+    memory.add_memory("Alice loves coffee.", namespace=namespace)
+    clusters = memory.store.list_edge_clusters(namespace)
+    members = memory.store.list_edge_cluster_members(namespace)
+    edges = memory.store.list_edges(namespace)
+    state_edges = [edge for edge in edges if edge.edge_type == "state"]
+    memory.close()
+
+    state_cluster_ids = {member.cluster_id for member in members if member.edge_id in {edge.edge_id for edge in state_edges}}
+    assert len(state_edges) == 2
+    assert len(state_cluster_ids) == 1
+    assert len(clusters) < len(edges)
+
+
+def test_retriever_delegates_graph_expansion(tmp_path):
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=StaticExtractor(),
+    )
+    namespace = "retrieval_expansion_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice prefers morning interviews.", namespace=namespace)
+    results = memory.search("Alice", namespace=namespace, top_k=5)
+    memory.close()
+
+    assert isinstance(memory.retriever.expansion, EdgeExpansion)
+    assert any("edge_coherence" in result["metadata"]["score_parts"] for result in results)
 
 
 def test_node_builder_delegates_local_graph_construction():
@@ -274,20 +347,85 @@ def test_collect_entities_adds_event_participants_and_assertion_subjects():
     assert names == {"Alice", "Bob", "Project Atlas"}
 
 
-def test_graph_maintenance_conflict_predicate_policy():
-    old_fact = NodeBuilder().build_fact_node(
-        ExtractedAssertion(subject="Toby", predicate="is_a", object="dog"),
-        NodeBuilder().build_or_update_entity_node(
-            ExtractedEntity(name="Toby"),
-            resolution=EntityResolution(aliases={"Toby"}),
-            context=AssemblyContext(namespace="maint_ns", metadata={}, current_turn=0),
-        ),
-        AssemblyContext(namespace="maint_ns", metadata={}, current_turn=0),
+def test_graph_maintenance_uses_llm_for_contradiction_decisions(tmp_path):
+    extractor = SequenceExtractor(
+        [
+            {"entities": [{"name": "Alice"}], "assertions": [{"subject": "Alice", "predicate": "loves", "object": "tea"}]},
+            {
+                "entities": [{"name": "Alice"}],
+                "assertions": [{"subject": "Alice", "predicate": "loves", "object": "coffee"}],
+            },
+            {
+                "entities": [{"name": "Alice"}],
+                "assertions": [{"subject": "Alice", "predicate": "travels_to", "object": "Paris"}],
+            },
+            {
+                "entities": [{"name": "Alice"}],
+                "assertions": [{"subject": "Alice", "predicate": "travels_to", "object": "Berlin"}],
+            },
+        ]
     )
+    maintenance_llm = MaintenanceLLM(
+        [
+            {
+                "conflict_state": "compatible",
+                "affected_existing_refs": [],
+                "recommended_old_status": "active",
+                "valid_time_update": {},
+                "rationale": "A person can love both tea and coffee.",
+            },
+            {
+                "conflict_state": "compatible",
+                "affected_existing_refs": [],
+                "recommended_old_status": "active",
+                "valid_time_update": {},
+                "rationale": "A person can travel to multiple places.",
+            },
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=extractor,
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "maintenance_llm_ns"
+    memory.reset(namespace)
 
-    assert is_conflict(old_fact, ExtractedAssertion(subject="Toby", predicate="is_a", object="cat"))
-    assert not is_conflict(old_fact, ExtractedAssertion(subject="Toby", predicate="likes", object="treats"))
-    assert isinstance(GraphMaintenance(), GraphMaintenance)
+    memory.add_memory("Alice loves tea.", namespace=namespace)
+    memory.add_memory("Alice loves coffee.", namespace=namespace)
+    memory.add_memory("Alice travels to Paris.", namespace=namespace)
+    memory.add_memory("Alice travels to Berlin.", namespace=namespace)
+    nodes = memory.store.list_nodes(namespace)
+    memory.close()
+
+    assert maintenance_llm.call_count == 2
+    assert not [node for node in nodes if node.status == "retired"]
+    assert any("loves coffee" in node.content for node in nodes)
+    assert any("travels_to Berlin" in node.content for node in nodes)
+
+
+def test_graph_maintenance_requires_llm_for_overlapping_fact_checks(tmp_path):
+    extractor = SequenceExtractor(
+        [
+            {"entities": [{"name": "Alice"}], "assertions": [{"subject": "Alice", "predicate": "loves", "object": "tea"}]},
+            {
+                "entities": [{"name": "Alice"}],
+                "assertions": [{"subject": "Alice", "predicate": "loves", "object": "coffee"}],
+            },
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=extractor,
+    )
+    namespace = "maintenance_requires_llm_ns"
+    memory.reset(namespace)
+    memory.add_memory("Alice loves tea.", namespace=namespace)
+
+    with pytest.raises(RuntimeError, match="requires an LLM"):
+        memory.add_memory("Alice loves coffee.", namespace=namespace)
+
+    memory.close()
 
 
 class StaticExtractor:
@@ -336,6 +474,22 @@ class StaticLLM:
 
     def generate_json(self, prompt):
         return self.payload
+
+
+class MaintenanceLLM:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.prompts = []
+
+    @property
+    def call_count(self):
+        return len(self.prompts)
+
+    def generate_json(self, prompt):
+        self.prompts.append(prompt)
+        if not self.payloads:
+            raise AssertionError("Unexpected maintenance LLM call")
+        return self.payloads.pop(0)
 
 
 class FakeEmbeddingClient:

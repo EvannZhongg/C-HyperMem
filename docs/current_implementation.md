@@ -55,10 +55,11 @@ Memory.add_memory/add
   - 编排 `LocalGraphBuilder` 为 event/entity/fact 构建统一 LocalNodeGraph。
   - 对 preference 谓词追加 `preference` 标签。
   - 编排 `BasicHyperEdgeBuilder` 构建基础 `evidence/state/correction` HyperEdge。
-  - 编排 `BasicEdgeClusterBuilder` 创建基础 EdgeCluster 与 cluster members。
+  - 编排 `BasicEdgeClusterBuilder` 按 topic fingerprint 复用或创建 EdgeCluster，并追加 cluster members。
   - 写入 entity alias index 和 fact property index。
 - 简单冲突事实处理已移入 `GraphMaintenance.retire_conflicting_facts(...)`：
-  - 同一 subject node + predicate 下新旧 object 不同时，旧 fact 标记为 `retired`。
+  - 同一 subject node + predicate 下存在旧 fact 时，调用 `maintenance.contradiction_check` 交由 LLM 判断 `same_value/compatible/contradiction/uncertain`。
+  - 只有 LLM 判定为 `contradiction` 且建议旧 fact `retired/invalidated` 时，旧 fact 才会被退役。
   - 创建 `correction` HyperEdge。
   - 同步退役旧 fact property index 行。
 
@@ -81,7 +82,7 @@ edge_clusters:
     trigger_every_k_writes: 100
 ```
 
-注意：这些维护 prompt 当前主要是接口和策略预留，除基础冲突退役外，完整 LLM 维护调用链尚未接入。
+注意：当前已接入 `contradiction_check.md` 用于同一 property key 下的新旧 fact 判决。其他维护 prompt 仍主要是接口和策略预留，尚未接入主流程。
 
 ## 6. 存储
 
@@ -104,7 +105,7 @@ edge_clusters:
 检索代码暂时保持轻量实现：
 
 - `Retriever` 使用 `LexicalScorer` 做 BM25-like 召回。
-- 支持基于 HyperEdge 的简单扩展。
+- `EdgeExpansion` 负责基于 incident HyperEdge 的简单拓扑扩展，`Retriever` 只保留召回、打分和结果编排。
 - 可根据 `preference/task/entity/time` 等信号做少量结构化加分。
 
 检索侧尚未按设计文档完整重构，后续需要补充向量召回、EdgeCluster 扩展、query analysis LLM、冲突感知排序等。
@@ -121,15 +122,15 @@ edge_clusters:
 - 实体 alias resolution 先于 entity 节点 ID 生成。
 - `HyperEdge` 与成员表分离，`EdgeCluster` 聚合相关边但不强制合并边。
 - `LocalNodeGraph` 采用统一结构，基础 triple 已持久化到 `triples` 表。
-- 基础 `evidence/state/correction` HyperEdge 已打通，基础冲突事实退役已接入写入流程。
+- 基础 `evidence/state/correction` HyperEdge 已打通，基础冲突事实退役已通过 `contradiction_check.md` 接入写入流程。
 
 当前实现仍低于设计文档的部分：
 
 - 增量构建缓存只实现了 `ingestion_cache` 表结构，尚未实现 cache cursor、prefix hash、append-only/rebuild 判断。
-- 维护 prompt 已存在，但 `fact_merge/contradiction_check/edge_merge/edge_conflict_check/edge_cluster_merge` 的 LLM 调用链尚未接入主流程。
+- 维护 prompt 已存在；`contradiction_check` 已接入主流程，但 `fact_merge/edge_merge/edge_conflict_check/edge_cluster_merge` 的 LLM 调用链尚未接入。
 - `turn/state/task/instruction/tool` 已作为标签配置存在，但尚未都有专门构建策略；当前主要依靠 LLM 输出 labels 和统一节点结构承载。
 - 向量索引配置和 embedding client 已有，但检索主流程仍以 lexical recall 为主，尚未启用完整向量召回链路。
-- EdgeCluster 当前由边描述轻量生成，尚未实现相似 cluster 召回、LLM cluster merge、后台宏观整理和复杂冲突状态维护。
+- EdgeCluster 已按 topic fingerprint 查库复用并追加新边；尚未实现相似 cluster 召回、LLM cluster merge、后台宏观整理和复杂冲突状态维护。
 - LocalNodeGraph 当前只覆盖 event participants、entity attributes 和 assertion SPO；还没有从事件内部关系、工具调用、任务状态中构建更丰富的局部图。
 
 ## 9. 设计仍不明确时的轻量替代方案
@@ -143,8 +144,8 @@ edge_clusters:
 
 - **事实 merge / update / contradiction**  
   设计方向：通过 `fact_merge.md` 和 `contradiction_check.md` 判断 merge、update、keep separate、conflict。  
-  当前方案：同一 `subject_node_id + predicate` 下 object 不同则保守退役旧 fact，并创建 correction edge；多值谓词暂不退役。  
-  原因：哪些谓词是单值、哪些 object 兼容、如何处理时间有效期仍需要评测反馈。当前 deterministic 规则更可解释，也保留历史事实。
+  当前方案：同一 `subject_node_id + predicate` 下存在旧 fact 时调用 `contradiction_check.md`，由 LLM 判断是否冲突；不再使用硬编码多值谓词或规则兜底。
+  原因：谓词是否多值、object 是否兼容、时间有效期如何更新都是语义判断，硬编码会误退役 `loves/travels_to` 等事实。若没有可用维护 LLM，当前选择显式失败，避免静默写坏图结构。
 
 - **HyperEdge 复用与合并**  
   设计方向：根据成员重叠、relation、roles、polarity、source/time 召回候选并判断复用、追加成员、新版本或新建。  
@@ -153,7 +154,7 @@ edge_clusters:
 
 - **EdgeCluster 整理**  
   设计方向：相关 HyperEdge 进入同一 cluster，并支持后台 cluster merge。  
-  当前方案：按 edge 类型和描述创建基础 cluster；后台整理只保留配置开关。  
+  当前方案：`BasicEdgeClusterBuilder` 先按 edge metadata 中的 topic hint 生成 `cluster_fingerprint`，查库复用已有 cluster；没有命中时才新建 cluster，后台整理仍只保留配置开关。
   原因：cluster 相似度阈值、冲突 cluster 的状态机、description variants 的压缩策略都还没有稳定标准。
 
 - **LocalNodeGraph 丰富度**  
@@ -188,8 +189,8 @@ edge_clusters:
 - **基础构建器与外部扩展 builder 并存**  
   当前 `BasicHyperEdgeBuilder` / `BasicEdgeClusterBuilder` 承担内置 M1 规则，`IngestionPipeline` 仍保留可注入的 `hyperedge_builder` / `edge_cluster_builder` 扩展点。这个形态比“只有 protocol 占位”更可运行，也比直接把规则写死在 assembler 更容易替换。
 
-- **维护 prompt 不默认进入主链路**  
-  原设计容易让后续实现把多个 maintenance prompt 串到每次写入中。当前保持“确定性规则先行，LLM 维护按需触发”的方向更稳。后续接入 prompt 时，应有明确召回候选、触发条件、成本控制和失败降级，不应每次写入无条件多轮调用 LLM。
+- **维护 prompt 按候选触发，不做规则兜底**
+  原设计容易让后续实现把多个 maintenance prompt 串到每次写入中。当前只在出现同一 property key 的旧 fact 候选时触发 `contradiction_check`；没有候选时不调用。后续接入其他 prompt 时，也应有明确召回候选、触发条件、成本控制和失败处理，不应每次写入无条件多轮调用 LLM，也不应用脆弱规则代替语义判决。
 
 - **`assertions` 作为事实、property index 和基础 triple 的唯一主输入**  
   这比让 LLM 同时输出 facts、attributes、triples 更稳定。后续即使扩展 extraction schema，也应避免同一事实在多个字段重复入库。
@@ -199,6 +200,9 @@ edge_clusters:
 
 - **EdgeCluster 不是 HyperEdge merge 的前置条件**  
   当前实现允许先创建具体 HyperEdge，再用 cluster 轻量聚合。后续相似边召回、cluster merge 都应维持“不强制合并具体边”的原则。
+
+- **检索扩展属于 `EdgeExpansion`**
+  `Retriever` 不再内联图拓扑扩展逻辑，而是委托 `retrieval.expansion.EdgeExpansion`。后续加入 multi-hop 或 EdgeCluster expansion 时，应扩展 `EdgeExpansion` 或新增 expansion 组件，不要让 `Retriever` 重新膨胀。
 
 - **`default_policy` 只作为内部 fallback，不暴露为 prompt label**  
   这避免 LLM 抽取出 `default_policy` 这种实现名标签。后续扩展 node label prompt 时应保持该行为。
@@ -216,7 +220,10 @@ edge_clusters:
 - `default_policy` 不作为 prompt label 渲染。
 - 抽取 prompt 注入 `node_labels.yaml`。
 - 维护 prompt registry 加载。
-- 冲突 fact 退役与 correction edge。
+- LLM contradiction check 驱动的冲突 fact 退役与 correction edge。
+- `loves/travels_to` 等多值语义由维护 LLM 判为 compatible 时不会被错误退役。
+- EdgeCluster 按 topic fingerprint 复用，多个相关 state edge 会追加到同一 cluster。
+- Retriever 委托 `EdgeExpansion` 做 HyperEdge 拓扑扩展。
 
 常用验证命令：
 

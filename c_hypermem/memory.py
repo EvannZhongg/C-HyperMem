@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from c_hypermem.config import MemoryConfig
+from c_hypermem.llms.base import LLMClient
 from c_hypermem.pipeline import IngestionPipeline
 from c_hypermem.pipeline.edge_cluster_builder import EdgeClusterBuilder
 from c_hypermem.pipeline.extraction import LLMMemoryExtractor, MemoryExtractor
@@ -22,6 +23,7 @@ class Memory:
         extractor: MemoryExtractor | None = None,
         hyperedge_builder: HyperEdgeBuilder | None = None,
         edge_cluster_builder: EdgeClusterBuilder | None = None,
+        maintenance_llm: LLMClient | None = None,
     ) -> None:
         self.config = config
         self.store = SQLiteStore(Path(config.storage.path))
@@ -33,6 +35,7 @@ class Memory:
             extractor=extractor,
             hyperedge_builder=hyperedge_builder,
             edge_cluster_builder=edge_cluster_builder,
+            maintenance_llm=maintenance_llm,
         )
         self.retriever = Retriever(self.store, config.retrieval)
         self._turn_counters: dict[str, int] = {}
@@ -45,12 +48,14 @@ class Memory:
         extractor: MemoryExtractor | None = None,
         hyperedge_builder: HyperEdgeBuilder | None = None,
         edge_cluster_builder: EdgeClusterBuilder | None = None,
+        maintenance_llm: LLMClient | None = None,
     ) -> "Memory":
         return cls(
             MemoryConfig.load(config),
             extractor=extractor,
             hyperedge_builder=hyperedge_builder,
             edge_cluster_builder=edge_cluster_builder,
+            maintenance_llm=maintenance_llm,
         )
 
     def reset(self, namespace: str = "default") -> None:

@@ -87,6 +87,12 @@ class BasicHyperEdgeBuilder:
             polarity=polarity,
             context=context,
         )
+        edge.metadata["cluster_hint"] = {
+            "kind": "property",
+            "subject_node_id": subject_node.node_id,
+            "predicate": predicate,
+            "subject": subject,
+        }
         self.attach_fact_triples_to_edge(fact_node, edge, roles.get(fact_node.node_id))
         return edge
 

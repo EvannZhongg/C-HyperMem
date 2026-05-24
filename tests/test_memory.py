@@ -126,6 +126,9 @@ def test_default_config_includes_split_config_files():
     assert not config.node_identity.include_node_labels
     assert config.hyperedges.basic_edge_types == ["evidence", "state", "correction"]
     assert config.edge_clusters.enabled
+    assert config.edge_clusters.maintenance_prompts.fact_merge == "maintenance/fact_merge.md"
+    assert config.edge_clusters.maintenance_prompts.contradiction_check == "maintenance/contradiction_check.md"
+    assert config.edge_clusters.background_maintenance.trigger_every_k_writes == 100
     assert config.local_graph.configured_by_node_labels
     assert config.node_labels.labels["event"].indexing.time_index
     assert dict_config.llm is not None
@@ -142,6 +145,8 @@ def test_embedding_model_client_is_generic_entrypoint():
 def test_maintenance_prompt_registry_loads_edge_prompts():
     registry = PromptRegistry()
 
+    assert registry.load("maintenance.fact_merge").hash.startswith("sha256:")
+    assert registry.load("maintenance.contradiction_check").hash.startswith("sha256:")
     assert registry.load("maintenance.edge_merge").hash.startswith("sha256:")
     assert registry.load("maintenance.edge_cluster_merge").hash.startswith("sha256:")
     assert registry.load("maintenance.edge_conflict_check").hash.startswith("sha256:")

@@ -107,9 +107,16 @@ class HyperEdgesConfig(BaseModel):
 
 
 class EdgeClusterPromptsConfig(BaseModel):
+    fact_merge: str = "maintenance/fact_merge.md"
+    contradiction_check: str = "maintenance/contradiction_check.md"
     edge_merge: str = "maintenance/edge_merge.md"
     edge_cluster_merge: str = "maintenance/edge_cluster_merge.md"
     edge_conflict_check: str = "maintenance/edge_conflict_check.md"
+
+
+class BackgroundClusterMaintenanceConfig(BaseModel):
+    enabled: bool = False
+    trigger_every_k_writes: int = 100
 
 
 class EdgeClustersConfig(BaseModel):
@@ -118,6 +125,9 @@ class EdgeClustersConfig(BaseModel):
     allow_conflict_clusters: bool = True
     description_variants_limit: int = 8
     maintenance_prompts: EdgeClusterPromptsConfig = Field(default_factory=EdgeClusterPromptsConfig)
+    background_maintenance: BackgroundClusterMaintenanceConfig = Field(
+        default_factory=BackgroundClusterMaintenanceConfig
+    )
 
 
 class LocalGraphConfig(BaseModel):

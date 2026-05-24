@@ -50,9 +50,14 @@ edge_clusters:
   allow_conflict_clusters: true
   description_variants_limit: 8
   maintenance_prompts:
+    fact_merge: maintenance/fact_merge.md
+    contradiction_check: maintenance/contradiction_check.md
     edge_merge: maintenance/edge_merge.md
     edge_cluster_merge: maintenance/edge_cluster_merge.md
     edge_conflict_check: maintenance/edge_conflict_check.md
+  background_maintenance:
+    enabled: false
+    trigger_every_k_writes: 100
 
 local_graph:
   enabled: true

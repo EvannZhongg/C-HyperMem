@@ -58,7 +58,6 @@ class Memory:
         )
         self.retriever = Retriever(self.store, config.retrieval)
         self._turn_counters: dict[str, int] = {}
-        self._message_history: dict[str, list[Message]] = {}
 
     @classmethod
     def from_config(
@@ -87,7 +86,6 @@ class Memory:
         if self.vector_store is not None:
             self.vector_store.delete_namespace(namespace)
         self._turn_counters[namespace] = 0
-        self._message_history[namespace] = []
 
     def add_memory(
         self,
@@ -114,15 +112,18 @@ class Memory:
             }
         )
         target_messages = interaction_messages(interaction)
-        current_turn = self._next_turn(namespace, increment=max(1, len(target_messages)))
+        current_turn = self._next_turn(namespace)
+        turn_id = _turn_id(current_turn)
+        recent_messages = self._recent_context(namespace)
+        interaction.metadata = _with_turn_ids(interaction.metadata, [turn_id])
+        self.store.append_turn(namespace, turn_id, current_turn, target_messages, interaction.metadata)
         output = self.ingestion.ingest_interaction(
             interaction,
             namespace=namespace,
             current_turn=current_turn,
-            recent_messages=self._recent_context(namespace),
+            recent_messages=recent_messages,
         )
         self._persist_output(output)
-        self._remember_messages(namespace, target_messages)
 
     def add(
         self,
@@ -132,16 +133,18 @@ class Memory:
     ) -> None:
         message_objs = _normalize_messages(messages)
         for message in message_objs:
-            batch = MemoryImportBatch(messages=[message], metadata=metadata or {})
-            current_turn = self._next_turn(namespace, increment=1)
+            current_turn = self._next_turn(namespace)
+            turn_id = _turn_id(current_turn)
+            batch = MemoryImportBatch(messages=[message], metadata=_with_turn_ids(metadata or {}, [turn_id]))
+            recent_messages = self._recent_context(namespace)
+            self.store.append_turn(namespace, turn_id, current_turn, [message], batch.metadata)
             output = self.ingestion.ingest_batch(
                 batch,
                 namespace=namespace,
                 current_turn=current_turn,
-                recent_messages=self._recent_context(namespace),
+                recent_messages=recent_messages,
             )
             self._persist_output(output)
-            self._remember_messages(namespace, [message])
 
     def search(
         self,
@@ -166,9 +169,11 @@ class Memory:
             self.vector_store.close()
         self.store.close()
 
-    def _next_turn(self, namespace: str, increment: int) -> int:
-        current = self._turn_counters.get(namespace, 0)
-        self._turn_counters[namespace] = current + increment
+    def _next_turn(self, namespace: str) -> int:
+        if namespace not in self._turn_counters:
+            self._turn_counters[namespace] = self.store.next_turn_index(namespace)
+        current = self._turn_counters[namespace]
+        self._turn_counters[namespace] = current + 1
         return current
 
     def _record_access(self, namespace: str, node_ids: list[str], current_turn: int | None) -> None:
@@ -182,15 +187,7 @@ class Memory:
         window_size = max(0, self.config.ingestion.context_window_messages)
         if window_size == 0:
             return []
-        return list(self._message_history.get(namespace, [])[-window_size:])
-
-    def _remember_messages(self, namespace: str, messages: list[Message]) -> None:
-        window_size = max(0, self.config.ingestion.context_window_messages)
-        if window_size == 0 or not messages:
-            self._message_history[namespace] = []
-            return
-        history = [*self._message_history.get(namespace, []), *messages]
-        self._message_history[namespace] = history[-window_size:]
+        return self.store.list_recent_turn_messages(namespace, window_size)
 
     def _persist_output(self, output: Any) -> None:
         self.store.upsert_nodes(output.nodes)
@@ -239,3 +236,15 @@ def _normalize_messages(messages: str | list[dict[str, Any]]) -> list[Message]:
     if isinstance(messages, str):
         return [Message(role="user", content=messages)]
     return [Message.model_validate(message) for message in messages]
+
+
+def _turn_id(turn_index: int) -> str:
+    return f"turn:{turn_index}"
+
+
+def _with_turn_ids(metadata: dict[str, Any], turn_ids: list[str]) -> dict[str, Any]:
+    merged = dict(metadata)
+    existing = merged.get("turn_ids")
+    existing_ids = [str(item) for item in existing] if isinstance(existing, list) else []
+    merged["turn_ids"] = list(dict.fromkeys([*existing_ids, *turn_ids]))
+    return merged

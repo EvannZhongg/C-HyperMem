@@ -56,6 +56,8 @@ def test_add_uses_explicit_extractor_only(tmp_path):
     )
     results = memory.search("morning interviews", namespace=namespace, top_k=3)
     stats = memory.stats(namespace)
+    nodes = memory.store.list_nodes(namespace)
+    edges = memory.store.list_edges(namespace)
     memory.close()
 
     assert extractor.called
@@ -70,9 +72,13 @@ def test_add_uses_explicit_extractor_only(tmp_path):
     assert stats["triples"] >= 1
     assert stats["entity_aliases"] >= 1
     assert stats["fact_properties"] == 1
+    assert stats["turns"] == 1
+    assert stats["turn_messages"] == 1
     assert results
     assert "Alice prefers morning interviews" in results[0]["content"]
     assert "state" in results[0]["metadata"]["edge_types"]
+    assert all(node.metadata.get("source_turn_ids") == ["turn:0"] for node in nodes)
+    assert all(edge.metadata.get("source_turn_ids") == ["turn:0"] for edge in edges)
 
 
 def test_sqlite_hyper_edges_use_member_table(tmp_path):
@@ -106,6 +112,7 @@ def test_sqlite_hyper_edges_use_member_table(tmp_path):
     assert "entity_id" not in alias_index_columns
     assert "fact_id" not in fact_index_columns
     assert "ingestion_cache" not in tables
+    assert "turns" in tables
 
 
 def test_default_config_includes_split_config_files():
@@ -350,6 +357,39 @@ def test_add_batches_as_incremental_single_message_targets(tmp_path):
         ["Turn one."],
         ["Turn one.", "Turn two."],
     ]
+
+
+def test_context_window_uses_persisted_turn_table(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    first_extractor = RecordingWindowExtractor()
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(db_path)},
+            "ingestion": {"context_window_messages": 2},
+        },
+        extractor=first_extractor,
+    )
+    namespace = "persisted_window_ns"
+    memory.reset(namespace)
+    memory.add_memory("First turn.", namespace=namespace)
+    memory.close()
+
+    second_extractor = RecordingWindowExtractor()
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(db_path)},
+            "ingestion": {"context_window_messages": 2},
+        },
+        extractor=second_extractor,
+    )
+    memory.add_memory("Second turn.", namespace=namespace)
+    stats = memory.stats(namespace)
+    memory.close()
+
+    assert [message.content for message in second_extractor.windows[0].context] == ["First turn."]
+    assert [message.content for message in second_extractor.windows[0].target] == ["Second turn."]
+    assert stats["turns"] == 2
+    assert stats["turn_messages"] == 2
 
 
 def test_conflicting_fact_retires_old_fact_and_adds_correction_edge(tmp_path):

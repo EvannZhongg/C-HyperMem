@@ -56,6 +56,7 @@ Memory.add_memory/add
 - `node_labels.yaml` 的启用标签描述会注入抽取 prompt 的 `{{NODE_LABELS}}`。
 - 抽取输出归一化为 `MemoryExtraction`。
 - `assertions` 是当前构建事实节点的主输入：每条 assertion 会转为 `fact` 节点、LocalNodeGraph triple、property index 和基础超边成员。
+- 原始交互消息不写入 `nodes`；`Memory` 会先写入独立 `turns` 表，再把当前 `turn_id` 放入 `metadata.turn_ids`，GraphAssembler 组装出的节点和边会在 metadata 中带上 `source_turn_ids`。
 - `GraphAssembler` 负责系统组装：
   - 编排 `EntityResolver` 做轻量 entity alias resolution。
   - 编排 `NodeBuilder` 构建或复用 `entity/event/fact` 节点。
@@ -103,6 +104,7 @@ edge_clusters:
 - `edge_cluster_members`
 - `entity_alias_index`
 - `fact_property_index`
+- `turns`
 
 向量索引当前通过 `c_hypermem/stores/vector_store.py` 接入：
 
@@ -139,7 +141,7 @@ edge_clusters:
 
 当前实现仍低于设计文档的部分：
 
-- 应用层 hash/cache 游标已按 `development_architecture.md` 7.2 删除；增量抽取通过 Context/Target 滑动窗口实现，并依赖模型服务的 prompt caching。
+- 应用层 hash/cache 游标已按 `development_architecture.md` 7.2 删除；增量抽取通过独立 `turns` 表 + Context/Target 滑动窗口实现，并依赖模型服务的 prompt caching。
 - 维护 prompt 已存在；`contradiction_check` 已接入主流程，但 `fact_merge/edge_merge/edge_conflict_check/edge_cluster_merge` 的 LLM 调用链尚未接入。
 - `turn/state/task/instruction/tool` 已作为标签配置存在，但尚未都有专门构建策略；当前主要依靠 LLM 输出 labels 和统一节点结构承载。
 - 向量索引配置和 embedding client 已有，但检索主流程仍以 lexical recall 为主，尚未启用完整向量召回链路。
@@ -188,8 +190,13 @@ edge_clusters:
 
 - **事件驱动增量抽取**
   设计方向：每次只抽取最新 target，同时提供最近上下文辅助理解。
-  当前方案：删除 `ingestion_cache` 表和应用层 hash/cache 游标配置；`LLMMemoryExtractor` 接收 `ExtractionWindow(context, target)`，`context_window_messages` 控制上下文 K。
+  当前方案：删除 `ingestion_cache` 表和应用层 hash/cache 游标配置；原始消息写入独立 `turns` 表；`LLMMemoryExtractor` 接收 `ExtractionWindow(context, target)`，`context_window_messages` 控制上下文 K。
   原因：避免在应用层维护容易失真的 prefix/cursor 状态机，把重复 system prompt 的成本交给模型服务端 prompt caching，同时保留必要的语境消解能力。
+
+- **交互日志与知识图谱分离**
+  设计方向：非结构化聊天流水账不应混入高度结构化的图谱节点。
+  当前方案：`turns` 表保存原始历史交互，`nodes/hyper_edges/edge_clusters` 只保存抽取后的结构化记忆对象。当前 target 的 `turn_id` 会写入 `metadata.turn_ids`，并通过 `source_metadata()` 进入节点和边的 `source_turn_ids`。
+  原因：这样既能直接从交互日志实现微型滑动窗口，又能让图谱对象保留稳定溯源。
 
 这些轻量方案的原则是：先保证统一 schema、系统生成 ID、一次抽取和基础写入闭环稳定，再逐步补维护和检索增强。
 
@@ -236,6 +243,7 @@ edge_clusters:
 - embedding `batch_size` 配置和分批调用。
 - Context/Target 增量抽取窗口。
 - SQLite schema 不再创建 `ingestion_cache`。
+- SQLite `turns` 表保存交互历史，并为节点/边写入 `source_turn_ids`。
 - 默认向量后端配置为 Qdrant。
 - 三元组向量索引写入时使用 `subject predicate object` 拼接句子作为 embedding 输入。
 - 统一节点 schema 和 SQLite 表结构。

@@ -8,6 +8,7 @@ from c_hypermem.schema import (
     EntityAliasIndexEntry,
     FactPropertyIndexEntry,
     HyperEdge,
+    Message,
     MemoryNode,
 )
 
@@ -22,6 +23,19 @@ class MemoryStore(Protocol):
     def upsert_edge_clusters(self, clusters: list[EdgeCluster]) -> None: ...
 
     def upsert_edge_cluster_members(self, members: list[EdgeClusterMember]) -> None: ...
+
+    def append_turn(
+        self,
+        namespace: str,
+        turn_id: str,
+        turn_index: int,
+        messages: list[Message],
+        metadata: dict,
+    ) -> None: ...
+
+    def list_recent_turn_messages(self, namespace: str, limit: int) -> list[Message]: ...
+
+    def next_turn_index(self, namespace: str) -> int: ...
 
     def list_nodes(self, namespace: str) -> list[MemoryNode]: ...
 

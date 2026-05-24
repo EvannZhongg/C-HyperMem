@@ -13,6 +13,7 @@ from c_hypermem.schema import (
     FactPropertyIndexEntry,
     HyperEdge,
     LocalNodeGraph,
+    Message,
     MemoryNode,
     TimeBundle,
 )
@@ -39,6 +40,7 @@ class SQLiteStore:
                 "nodes",
                 "fact_property_index",
                 "entity_alias_index",
+                "turns",
             ]:
                 self.conn.execute(f"DELETE FROM {table} WHERE namespace = ?", (namespace,))
 
@@ -282,6 +284,76 @@ class SQLiteStore:
                     ),
                 )
 
+    def append_turn(
+        self,
+        namespace: str,
+        turn_id: str,
+        turn_index: int,
+        messages: list[Message],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if not messages:
+            return
+        turn_metadata = metadata or {}
+        inserted_at = utc_now_iso()
+        with self.conn:
+            for message_index, message in enumerate(messages):
+                self.conn.execute(
+                    """
+                    INSERT INTO turns (
+                        namespace, turn_id, turn_index, message_index, role, content,
+                        timestamp, message_metadata_json, turn_metadata_json, inserted_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(namespace, turn_id, message_index) DO UPDATE SET
+                        turn_index = excluded.turn_index,
+                        role = excluded.role,
+                        content = excluded.content,
+                        timestamp = excluded.timestamp,
+                        message_metadata_json = excluded.message_metadata_json,
+                        turn_metadata_json = excluded.turn_metadata_json,
+                        inserted_at = excluded.inserted_at
+                    """,
+                    (
+                        namespace,
+                        turn_id,
+                        turn_index,
+                        message_index,
+                        message.role,
+                        message.content,
+                        message.timestamp,
+                        _to_json(message.metadata),
+                        _to_json(turn_metadata),
+                        inserted_at,
+                    ),
+                )
+
+    def list_recent_turn_messages(self, namespace: str, limit: int) -> list[Message]:
+        if limit <= 0:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM (
+                SELECT *
+                FROM turns
+                WHERE namespace = ?
+                ORDER BY turn_index DESC, message_index DESC
+                LIMIT ?
+            )
+            ORDER BY turn_index ASC, message_index ASC
+            """,
+            (namespace, limit),
+        ).fetchall()
+        return [_message_from_turn_row(row) for row in rows]
+
+    def next_turn_index(self, namespace: str) -> int:
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(turn_index) + 1, 0) AS next_turn_index FROM turns WHERE namespace = ?",
+            (namespace,),
+        ).fetchone()
+        return int(row["next_turn_index"])
+
     def upsert_entity_aliases(self, aliases: list[EntityAliasIndexEntry]) -> None:
         with self.conn:
             for alias in aliases:
@@ -518,12 +590,19 @@ class SQLiteStore:
             "triples": "triples",
             "fact_properties": "fact_property_index",
             "entity_aliases": "entity_alias_index",
+            "turn_messages": "turns",
         }.items():
             row = self.conn.execute(
                 f"SELECT COUNT(*) AS count FROM {table} WHERE namespace = ?",
                 (namespace,),
             ).fetchone()
             result[key] = int(row["count"])
+
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT turn_id) AS count FROM turns WHERE namespace = ?",
+            (namespace,),
+        ).fetchone()
+        result["turns"] = int(row["count"])
 
         for node in self.list_nodes(namespace):
             for label in node.node_labels:
@@ -688,6 +767,23 @@ class SQLiteStore:
                     CREATE INDEX IF NOT EXISTS idx_entity_alias_lookup
                         ON entity_alias_index(namespace, normalized_alias, entity_type);
 
+                    CREATE TABLE IF NOT EXISTS turns (
+                        namespace TEXT NOT NULL,
+                        turn_id TEXT NOT NULL,
+                        turn_index INTEGER NOT NULL,
+                        message_index INTEGER NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp TEXT,
+                        message_metadata_json TEXT NOT NULL,
+                        turn_metadata_json TEXT NOT NULL,
+                        inserted_at TEXT NOT NULL,
+                        PRIMARY KEY (namespace, turn_id, message_index)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_turns_namespace_order
+                        ON turns(namespace, turn_index, message_index);
+
                     """
                 )
         except sqlite3.DatabaseError as exc:
@@ -775,6 +871,18 @@ def _cluster_member_from_row(row: sqlite3.Row) -> EdgeClusterMember:
         relation_to_cluster=row["relation_to_cluster"],
         status=row["status"],
         metadata=_from_json(row["metadata_json"], {}),
+    )
+
+
+def _message_from_turn_row(row: sqlite3.Row) -> Message:
+    metadata = _from_json(row["message_metadata_json"], {})
+    metadata.setdefault("turn_id", row["turn_id"])
+    metadata.setdefault("turn_index", int(row["turn_index"]))
+    return Message(
+        role=row["role"],
+        content=row["content"],
+        timestamp=row["timestamp"],
+        metadata=metadata,
     )
 
 

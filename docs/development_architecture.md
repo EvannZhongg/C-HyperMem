@@ -1781,41 +1781,80 @@ python -m agent_memory_eval run configs\suites\locomo.yaml --backend c_hypermem 
 
 ## 14. 开发里程碑
 
-### M1：最小可接入
+本节记录截至当前代码的真实进度。实现状态以 `c_hypermem/`、`tests/` 和 `docs/current_implementation.md` 为准；长期设计仍可继续作为后续路线参考。
 
-- 建立 `c_hypermem` 包结构。
-- 实现 `Memory.from_config/reset/add/search/stats/close`。
-- 实现统一 `MemoryNode` schema、canonical fingerprint ID 和 `node_labels` 配置加载。
-- 默认启用 `event` / `fact` / `entity` 节点类型。
-- 实现系统生成 ID、entity alias 对齐和基础去重。
-- 实现基础 `evidence` / `state` / `correction` HyperEdges。
-- 实现基础 EdgeCluster，把相关 HyperEdge 聚合但不强行合并。
-- 返回可转换为 `MemoryItem` 的 search result。
-- 接入 `agent_memory_eval` 并跑通 `longmemeval_smoke --limit 1 --no-eval`。
+### M1：最小可接入（基本完成）
 
-### M2：复合节点增强
+已完成：
 
-- 为默认节点类型构建统一 `LocalNodeGraph`。
-- 持久化 triples。
-- 支持冲突事实退役和 correction HyperEdge。
-- 支持 EdgeCluster `contains_conflict` 状态和 description variants。
-- 在 search result metadata 中返回命中的 triples / local_graph 摘要。
-- 增加 fact 去重与 entity linking。
-- 增加可选 `tool` / `observation` 节点类型配置，为真实 agent 场景预留。
+- 建立 `c_hypermem` 独立包结构，保留 `pyproject.toml`、README、configs、examples 和 tests。
+- 实现 `Memory.from_config/reset/add/add_memory/search/stats/close`，当前推荐入口收敛到 `c_hypermem.Memory`。
+- 实现统一 `MemoryNode` schema、系统生成 ID、canonical fingerprint、`node_labels` 配置加载和 prompt 注入。
+- 默认启用并测试 `event` / `fact` / `entity` 等核心标签；`state/preference/task/instruction/tool` 也已作为可配置标签存在。
+- 实现 entity alias 精确对齐、基础去重、`EntityResolver`、`NodeBuilder`、`LocalGraphBuilder`、`BasicHyperEdgeBuilder`、`BasicEdgeClusterBuilder`、`GraphMaintenance` 等模块拆分；`GraphAssembler` 只保留编排职责。
+- 实现基础 `evidence` / `state` / `correction` HyperEdge。
+- 实现基础 EdgeCluster，并按 `cluster_fingerprint` 查库复用已有 cluster，新增边通过 `EdgeClusterMember` 追加，不再每条边新建一个簇。
+- 实现 SQLite 持久化：`nodes`、`triples`、`hyper_edges`、`hyper_edge_members`、`edge_clusters`、`edge_cluster_members`、`entity_alias_index`、`fact_property_index`、`turns`。
+- 删除应用层 `ingestion_cache` / hash / cursor 方案，改为独立 `turns` 表 + Context/Target 增量抽取。
+- `list_recent_turn_messages` 的窗口限制已按最近 K 个 `turn_index` 计算，而不是按消息行数计算，避免 tool logs 挤掉用户历史。
+- `memory_extraction.md` 已显式包含 `{{INTERACTION_METADATA}}`、`{{RECENT_CONTEXT}}`、`{{TARGET_MESSAGES}}`、`{{STRICT_JSON_SHAPE}}` 变量。
+- `search` 返回可序列化结果，并带基础 `score_parts`。
+- 已增加 LongMemEval 单段连续对话 smoke runner 和样本，用于观察真实 LLM 图谱构建效果。
 
-### M3：高阶关联检索
+仍未完成 / 待接入：
 
-- 实现 HyperEdge incident expansion。
-- 实现 EdgeCluster expansion。
-- 支持可选 semantic aggregation HyperEdge。
-- 实现可解释 `score_parts`。
-- 支持 temporal filter 和 recency decay。
-- 做 ablation：no local graph、no hyperedge expansion、no entity alias resolution。
+- 尚未正式接入 `agent_memory_eval` 的 `c_hypermem` backend；因此 `longmemeval_smoke --limit 1 --no-eval` 还不是标准 suite 入口跑通。
+- LongMemEval 当前只做了手工 smoke：真实 LLM 能构建答案事实图节点，但检索侧尚未稳定召回答案事实。
 
-### M4：正式评测与发布
+### M2：复合节点增强（部分完成）
 
-- 跑 LongMemEval S cleaned。
-- 跑 LOCOMO。
-- 输出 retrieval failure 分析和 token cost。
-- 准备独立包 README、examples、pyproject。
-- 确保 C-HyperMem 脱离 `agent_memory_eval` 可安装、可测试、可发布。
+已完成：
+
+- 为 `event`、`entity`、`fact` 构建基础统一 `LocalNodeGraph`。
+- 持久化 LocalGraph triples 到 `triples` 表。
+- `assertions` 已作为事实节点、property index 和基础 triple 的唯一主输入。
+- 支持 LLM 驱动的冲突事实判断：同一 `subject_node_id + predicate` 下存在旧 fact 时调用 `contradiction_check.md`，无硬编码多值谓词或规则兜底。
+- 支持旧 fact `retired/superseded_by/invalidated_by`、valid time end 更新、`correction` HyperEdge 和 retired fact property index。
+- `IngestionOutput` 已返回 `retired_nodes`；退役旧 fact 时会同步删除其 triple 对应的 Qdrant 向量点，避免退役事实被向量召回。
+- `turns` 表与知识图谱表分离，Node / Edge / Cluster metadata 写入 `source_turn_ids`，支持图数据溯源。
+- `tool` / `instruction` 等标签已在配置中预留，可由 LLM 输出并通过统一 `MemoryNode` 承载。
+
+仍未完成 / 待增强：
+
+- `LocalNodeGraph` 仍是轻量实现，主要覆盖 event participants、entity attributes 和 assertion SPO；尚未系统表达工具调用、任务状态、事件内部关系、qualifiers 的复杂结构。
+- `fact_merge.md`、`edge_merge.md`、`edge_conflict_check.md`、`edge_cluster_merge.md` 已存在但未接入主流程。
+- EdgeCluster 仅做确定性 topic/fingerprint 聚合和 description variants 保存；尚未实现 `contains_conflict` / 复杂 conflict state 维护、LLM cluster merge 和后台宏观整理。
+- search result metadata 尚未返回“命中的 triple / local_graph 摘要”作为一等调试字段。
+- fact 去重和 entity linking 当前是轻量精确匹配；尚未做 LLM 候选确认、复杂实体消歧或跨样本同名实体隔离策略。
+
+### M3：高阶关联检索（部分完成）
+
+已完成：
+
+- `Retriever` 已拆出 `retrieval/expansion.py`，由 `EdgeExpansion` 负责 HyperEdge incident expansion，避免检索类继续膨胀。
+- 实现 lexical recall + incident HyperEdge expansion + 基础结构化加分。
+- search result metadata 已包含可解释 `score_parts`。
+- 已有 recency decay / access boost 的轻量评分入口，访问后会更新节点访问时间。
+
+仍未完成 / 待增强：
+
+- Qdrant `VectorStore` 接口和三元组写入侧已完成，但检索主流程尚未使用向量召回。
+- 当前只索引 LocalGraph triples，不索引节点全文、HyperEdge 或 EdgeCluster。
+- 尚未实现 EdgeCluster expansion、multi-hop expansion、semantic aggregation HyperEdge。
+- temporal filter 仍是轻量化评分/metadata 方案，尚未形成完整时间条件解析与过滤。
+- 尚未完成 ablation：no local graph、no hyperedge expansion、no entity alias resolution、no vector recall。
+
+### M4：正式评测与发布（未完成）
+
+已完成：
+
+- 已有独立包骨架、README、pyproject、默认配置、测试集和手工 smoke example。
+- 当前自动化测试覆盖配置加载、prompt 渲染、Context/Target 增量抽取、turns 表、基础图写入、冲突退役、EdgeCluster 复用、Qdrant 写入侧接口等核心路径。
+
+仍未完成 / 待发布前处理：
+
+- 尚未跑 LongMemEval S cleaned 正式评测。
+- 尚未跑 LOCOMO。
+- 尚未输出系统化 retrieval failure 分析、token cost、ablation 报告。
+- 尚未把 C-HyperMem 接入 `agent_memory_eval` 作为标准 backend。
+- 尚未完成发布前安装验证、可选依赖组合验证和包发布流程。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 from uuid import NAMESPACE_URL, uuid5
@@ -27,7 +28,7 @@ class VectorIndexItem:
     payload: dict[str, Any]
 
 
-TripleIndexItem = VectorIndexItem
+NodeLocalGraphIndexItem = VectorIndexItem
 
 
 class VectorStore(Protocol):
@@ -196,43 +197,87 @@ def triple_embedding_text(triple: LocalTriple) -> str:
     return " ".join(part for part in [triple.subject, triple.predicate, triple.object] if part).strip()
 
 
-def collect_triple_index_items(nodes: Sequence[MemoryNode]) -> list[TripleIndexItem]:
-    items: list[TripleIndexItem] = []
-    for node in nodes:
-        for triple in node.local_graph.triples:
-            if triple.triple_id is None:
-                continue
+def node_local_graph_embedding_text(node: MemoryNode) -> str:
+    """Return the node-level text sent to the embedding model for local graph recall."""
+
+    lines: list[str] = []
+    content = node.content.strip()
+    if content:
+        lines.append(f"【核心内容】: {content}")
+
+    attributes = {
+        str(key): value
+        for key, value in node.attributes.items()
+        if value not in (None, "", [], {})
+    }
+    if attributes:
+        lines.append("【属性】:")
+        for key, value in sorted(attributes.items()):
+            lines.append(f"- {key}: {_payload_text(value)}")
+
+    triples = [triple for triple in node.local_graph.triples if triple.triple_id is not None]
+    if triples:
+        lines.append("【相关事实】:")
+        for triple in triples:
             text = triple_embedding_text(triple)
-            payload = {
-                "namespace": node.namespace,
-                "item_type": "triple",
-                "triple_id": triple.triple_id,
-                "owner_node_id": node.node_id,
-                "owner_node_labels": node.node_labels,
-                "owner_node_status": node.status,
-                "subject": triple.subject,
-                "predicate": triple.predicate,
-                "object": triple.object,
-                "status": triple.status,
-                "scope_edge_id": triple.scope_edge_id,
-                "scope_cluster_id": triple.scope_cluster_id,
-                "role_in_edge": triple.role_in_edge,
-                "edge_relation": triple.edge_relation,
-                "superseded_by": triple.superseded_by,
-                "invalidated_by": triple.invalidated_by,
-                "qualifiers": triple.qualifiers,
-                "node_content": node.content,
-                "node_summary": node.summary,
-                "node_time": node.time.model_dump(mode="json"),
-                "node_metadata": node.metadata,
-            }
-            items.append(
-                TripleIndexItem(
-                    id=make_vector_point_id(node.namespace, "triple", triple.triple_id),
-                    text=text,
-                    payload={key: value for key, value in payload.items() if value is not None},
-                )
+            if text:
+                lines.append(f"- {text}")
+
+    return "\n".join(lines).strip()
+
+
+def collect_node_local_graph_index_items(nodes: Sequence[MemoryNode]) -> list[NodeLocalGraphIndexItem]:
+    items: list[NodeLocalGraphIndexItem] = []
+    for node in nodes:
+        if not node.local_graph.triples:
+            continue
+        triples = [triple for triple in node.local_graph.triples if triple.triple_id is not None]
+        if not triples:
+            continue
+        text = node_local_graph_embedding_text(node)
+        if not text:
+            continue
+        payload = {
+            "namespace": node.namespace,
+            "item_type": "node_local_graph",
+            "node_id": node.node_id,
+            "node_labels": node.node_labels,
+            "node_status": node.status,
+            "canonical_text": node.canonical_text,
+            "normalized_text": node.normalized_text,
+            "fingerprint": node.fingerprint,
+            "triple_ids": [triple.triple_id for triple in triples],
+            "triple_count": len(triples),
+            "triples": [
+                {
+                    "triple_id": triple.triple_id,
+                    "subject": triple.subject,
+                    "predicate": triple.predicate,
+                    "object": triple.object,
+                    "status": triple.status,
+                    "scope_edge_id": triple.scope_edge_id,
+                    "scope_cluster_id": triple.scope_cluster_id,
+                    "role_in_edge": triple.role_in_edge,
+                    "edge_relation": triple.edge_relation,
+                    "superseded_by": triple.superseded_by,
+                    "invalidated_by": triple.invalidated_by,
+                    "qualifiers": triple.qualifiers,
+                }
+                for triple in triples
+            ],
+            "attributes": node.attributes,
+            "node_content": node.content,
+            "node_summary": node.summary,
+            "node_time": node.time.model_dump(mode="json"),
+            "node_metadata": node.metadata,
+        }
+        items.append(
+            NodeLocalGraphIndexItem(
+                id=make_vector_point_id(node.namespace, "triple", node.node_id),
+                text=text,
+                payload={key: value for key, value in payload.items() if value is not None},
             )
+        )
     return items
 
 
@@ -394,6 +439,12 @@ def _turn_dialogue_role_label(role: str) -> str | None:
     if normalized == "assistant":
         return "Assistant"
     return None
+
+
+def _payload_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def _collection_vector_size(collection: Any) -> int | None:

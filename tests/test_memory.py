@@ -21,8 +21,9 @@ from c_hypermem.retrieval.expansion import EdgeExpansion
 from c_hypermem.schema import ExtractedAssertion, ExtractedEntity, MemoryExtraction, Message
 from c_hypermem.stores.vector_store import (
     QdrantVectorStore,
-    collect_triple_index_items,
+    collect_node_local_graph_index_items,
     make_vector_point_id,
+    node_local_graph_embedding_text,
     triple_embedding_text,
     turn_dialogue_embedding_text,
 )
@@ -187,7 +188,7 @@ def test_embedding_model_client_batches_requests():
     assert len(embeddings) == 5
 
 
-def test_memory_indexes_local_triples_as_sentence_strings(tmp_path):
+def test_memory_indexes_node_local_graph_as_single_vector(tmp_path):
     embedding_client = RecordingEmbeddingClient()
     vector_store = RecordingVectorStore()
     memory = Memory.from_config(
@@ -204,11 +205,8 @@ def test_memory_indexes_local_triples_as_sentence_strings(tmp_path):
     fact_nodes = [node for node in nodes if "fact" in node.node_labels]
     memory.close()
 
-    expected_texts = [
-        "Alice participated_as speaker",
-        "Alice prefers morning interviews",
-    ]
     assert fact_nodes
+    fact_local_graph_text = node_local_graph_embedding_text(fact_nodes[0])
     assert embedding_client.inputs == [
         [
             "User: Alice prefers morning interviews.",
@@ -223,7 +221,16 @@ def test_memory_indexes_local_triples_as_sentence_strings(tmp_path):
             "Alice",
             "Alice prefers morning interviews",
         ],
-        expected_texts,
+        [
+            (
+                "【核心内容】: Alice discussed interview scheduling.\n"
+                "【属性】:\n"
+                '- participants: {"Alice": "speaker"}\n'
+                "【相关事实】:\n"
+                "- Alice participated_as speaker"
+            ),
+            fact_local_graph_text,
+        ],
         [
             "evidence: supports_extracted_facts",
             "Alice prefers morning interviews",
@@ -238,18 +245,20 @@ def test_memory_indexes_local_triples_as_sentence_strings(tmp_path):
     assert item_types.count("turn_dialogue") == 1
     assert item_types.count("node_content") == 3
     assert item_types.count("node_summary") == 3
-    assert item_types.count("triple") == 2
+    assert item_types.count("node_local_graph") == 2
     assert item_types.count("edge_cluster_canonical") == 2
     assert item_types.count("edge_cluster_variant") == 2
     record = next(
         item
         for item in vector_store.records
-        if item.text == expected_texts[1] and item.payload["item_type"] == "triple"
+        if item.payload["item_type"] == "node_local_graph" and item.payload["node_id"] == fact_nodes[0].node_id
     )
-    assert record.payload["item_type"] == "triple"
+    assert record.payload["item_type"] == "node_local_graph"
     assert record.payload["namespace"] == namespace
-    assert record.payload["owner_node_id"] == fact_nodes[0].node_id
-    assert record.payload["triple_id"] == fact_nodes[0].local_graph.triples[0].triple_id
+    assert record.payload["node_id"] == fact_nodes[0].node_id
+    assert record.payload["triple_ids"] == [fact_nodes[0].local_graph.triples[0].triple_id]
+    assert record.payload["triple_count"] == 1
+    assert record.id == make_vector_point_id(namespace, "triple", fact_nodes[0].node_id)
     assert vector_store.deleted_namespaces == [namespace]
     assert vector_store.closed
 
@@ -335,7 +344,7 @@ def test_default_qdrant_vector_stores_use_separate_collections(tmp_path):
     }
 
 
-def test_collect_triple_index_items_skips_unpersisted_triple_ids():
+def test_collect_node_local_graph_index_items_builds_one_vector_per_node_and_skips_unpersisted_triples():
     builder = NodeBuilder(LocalGraphBuilder())
     context = AssemblyContext(namespace="skip_ns", metadata={}, current_turn=0)
     subject = builder.build_or_update_entity_node(
@@ -351,7 +360,8 @@ def test_collect_triple_index_items_skips_unpersisted_triple_ids():
 
     assert fact.local_graph.triples[0].triple_id is None
     assert triple_embedding_text(fact.local_graph.triples[0]) == "Alice prefers tea"
-    assert collect_triple_index_items([fact]) == []
+    assert node_local_graph_embedding_text(fact).startswith("【核心内容】: Alice prefers tea\n【属性】:")
+    assert collect_node_local_graph_index_items([fact]) == []
 
 
 def test_memory_does_not_create_default_vector_store_without_embedding_config(tmp_path):
@@ -603,7 +613,7 @@ def test_conflicting_fact_retires_old_fact_and_adds_correction_edge(tmp_path):
     assert stats["fact_properties"] == 2
 
 
-def test_retired_fact_triples_are_removed_from_vector_store(tmp_path):
+def test_retired_fact_local_graph_vector_is_removed_from_vector_store(tmp_path):
     embedding_client = RecordingEmbeddingClient()
     vector_store = RecordingVectorStore()
     extractor = SequenceExtractor(
@@ -646,11 +656,9 @@ def test_retired_fact_triples_are_removed_from_vector_store(tmp_path):
     memory.close()
 
     assert retired
-    old_triple_id = retired[0].local_graph.triples[0].triple_id
-    assert old_triple_id is not None
-    assert make_vector_point_id(namespace, old_triple_id) in vector_store.deleted_ids
-    assert any(record.text == "Toby is_a dog" for record in vector_store.records)
-    assert any(record.text == "Toby is_a cat" for record in vector_store.records)
+    assert make_vector_point_id(namespace, "triple", retired[0].node_id) in vector_store.deleted_ids
+    assert any("【相关事实】:\n- Toby is_a dog" in record.text for record in vector_store.records)
+    assert any("【相关事实】:\n- Toby is_a cat" in record.text for record in vector_store.records)
 
 
 def test_edge_cluster_builder_reuses_existing_property_cluster(tmp_path):

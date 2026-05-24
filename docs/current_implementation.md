@@ -122,12 +122,23 @@ edge_clusters:
   - `c_hypermem_memory_edge_cluster_canonical`
   - `c_hypermem_memory_edge_cluster_variant`
   - `c_hypermem_memory_turn_dialogue`
-- `triple` 向量：索引 LocalGraph 中的三元组，包括 fact SPO 和 event participant 等局部 triple。写入前按 `subject predicate object` 直接拼接为句子字符串作为 embedding 输入，例如 `Alice prefers morning interviews`。
+- `triple` collection 当前实际保存的是 **node-local-graph 向量**：每个带 LocalGraph triples 的 `MemoryNode` 只写入 1 个向量点，而不是每条 triple 一个向量点。写入前会把节点核心内容、节点属性和该节点内部所有 triples 揉成一段完整文本，例如：
+
+  ```text
+  【核心内容】: Alice prefers morning interviews
+  【属性】:
+  - predicate: prefers
+  - subject: Alice
+  【相关事实】:
+  - Alice prefers morning interviews
+  ```
+
+  payload 中保留 `node_id/triple_ids/triple_count/triples/node_metadata`。当一个 node 后续新增或更新 triples 时，会用同一个 `node_id` 生成的向量点 ID 覆盖更新该 node 的 local graph 向量；该向量可以被该 node 内每个 triple 通过 payload 中的 `triple_ids` 回指。
 - `node_content` / `node_summary` 向量：索引 `MemoryNode.content` 和 `MemoryNode.summary` 原文，payload 中保留 `node_id/node_labels/status/time/metadata` 等信息。
 - `edge_cluster_canonical` 向量：索引 `EdgeCluster.canonical_description`，payload 中保留 `cluster_id/cluster_labels/conflict_state` 等信息。
 - `edge_cluster_variant` 向量：索引 `EdgeCluster.description_variants` 中的各个描述变体，payload 中保留 `cluster_id/variant_index/source_edge_id` 等信息。`BasicEdgeClusterBuilder` 复用已有 cluster 时会追加新的 description variant，并重新持久化 cluster。
 - `turn_dialogue` 向量：只索引同一个 `turn_id` 下 role 为 `user` 和 `assistant` 的消息，按轮次拼接为完整对话日志，且payload 中必须带 `turn_id` 和 `turn_index`。后续检索命中该向量时，应拿 `turn_id` 回 SQLite `turns` 表提取完整对话，而不是依赖向量库中的文本作为权威上下文。
-- LLM 维护流程退役旧 fact 时，会删除该旧 fact 对应的 triple、node_content 和 node_summary 向量点，避免退役事实被向量召回。
+- LLM 维护流程退役旧 fact 时，会删除该旧 fact 对应的 node-local-graph、node_content 和 node_summary 向量点，避免退役事实被向量召回。
 
 ## 7. 检索现状
 
@@ -158,7 +169,7 @@ edge_clusters:
 - 维护 prompt 已存在；`contradiction_check` 已接入主流程，但 `fact_merge/edge_merge/edge_conflict_check/edge_cluster_merge` 的 LLM 调用链尚未接入。
 - `turn/state/task/instruction/tool` 已作为标签配置存在，但尚未都有专门构建策略；当前主要依靠 LLM 输出 labels 和统一节点结构承载。
 - 向量索引配置和 embedding client 已有，但检索主流程仍以 lexical recall 为主，尚未启用完整向量召回链路。
-- triple/node/edge_cluster/turn_dialogue 向量写入已接入 Qdrant，但检索主流程仍未使用向量召回；当前只完成写入侧索引建设。
+- node-local-graph/node/edge_cluster/turn_dialogue 向量写入已接入 Qdrant，但检索主流程仍未使用向量召回；当前只完成写入侧索引建设。
 - EdgeCluster 已按 topic fingerprint 查库复用并追加新边；复用已有 cluster 时会追加 description variant；尚未实现相似 cluster 召回、LLM cluster merge、后台宏观整理和复杂冲突状态维护。
 - LocalNodeGraph 当前只覆盖 event participants、entity attributes 和 assertion SPO；还没有从事件内部关系、工具调用、任务状态中构建更丰富的局部图。
 
@@ -198,8 +209,8 @@ edge_clusters:
 
 - **检索增强**
   设计方向：lexical + vector + hyperedge + edge cluster + temporal + rerank。
-  当前方案：写入侧已为 triple、node content、node summary、EdgeCluster canonical description、EdgeCluster description variants、turn dialogue 分别建立独立 Qdrant collection；检索侧仍为 lexical recall + 简单 HyperEdge expansion + 少量结构化加分，尚未接入向量召回。
-  原因：先建立可重建的向量索引层和 payload 结构，再逐步接入 triple/node/hyperedge/cluster 的混合召回策略，避免一开始就把召回质量问题和写入结构问题混在一起。
+  当前方案：写入侧已为 node-local-graph、node content、node summary、EdgeCluster canonical description、EdgeCluster description variants、turn dialogue 分别建立独立 Qdrant collection；检索侧仍为 lexical recall + 简单 HyperEdge expansion + 少量结构化加分，尚未接入向量召回。
+  原因：先建立可重建的向量索引层和 payload 结构，再逐步接入 node-local-graph/node/hyperedge/cluster 的混合召回策略，避免一开始就把召回质量问题和写入结构问题混在一起。
 
 - **事件驱动增量抽取**
   设计方向：每次只抽取最新 target，同时提供最近上下文辅助理解。
@@ -238,11 +249,8 @@ edge_clusters:
 - **检索扩展属于 `EdgeExpansion`**
   `Retriever` 不再内联图拓扑扩展逻辑，而是委托 `retrieval.expansion.EdgeExpansion`。后续加入 multi-hop 或 EdgeCluster expansion 时，应扩展 `EdgeExpansion` 或新增 expansion 组件，不要让 `Retriever` 重新膨胀。
 
-- **Qdrant 作为默认向量后端**
-  原设计文档中仍提到 `faiss/chromadb`。当前实现选择 Qdrant local mode：用户无需启动服务，且 payload filter 能自然承载 `namespace/item_type/status/predicate/edge` 等检索条件。后续不要再按旧文档默认回退到 FAISS；FAISS 更适合作为纯 ANN 内核，不适合作为当前图记忆的主向量存储抽象。
-
 - **不同语义向量使用独立 collection**
-  当前已索引三元组、节点 content、节点 summary、EdgeCluster canonical description、EdgeCluster description variants 和 turn dialogue，但每类向量使用独立 Qdrant collection。后续接入检索侧向量召回时，也应保持不同语义类型可分别召回、分别限流、分别解释，不应把所有向量混入同一个 collection 增加检索压力。
+  当前已索引 node-local-graph、节点 content、节点 summary、EdgeCluster canonical description、EdgeCluster description variants 和 turn dialogue，但每类向量使用独立 Qdrant collection。后续接入检索侧向量召回时，也应保持不同语义类型可分别召回、分别限流、分别解释，不应把所有向量混入同一个 collection 增加检索压力。
 
 - **`default_policy` 只作为内部 fallback，不暴露为 prompt label**  
   这避免 LLM 抽取出 `default_policy` 这种实现名标签。后续扩展 node label prompt 时应保持该行为。
@@ -258,7 +266,7 @@ edge_clusters:
 - SQLite schema 不再创建 `ingestion_cache`。
 - SQLite `turns` 表保存交互历史，并为节点/边写入 `source_turn_ids`。
 - 默认向量后端配置为 Qdrant。
-- 三元组向量索引写入时使用 `subject predicate object` 拼接句子作为 embedding 输入。
+- node-local-graph 向量索引按 node 聚合写入：一个 node 的 `content/attributes/triples` 拼成一段文本，只写入 1 个向量点，payload 中保留该 node 下所有 `triple_ids`。
 - `MemoryNode.content` 和 `MemoryNode.summary` 分别写入独立向量 collection。
 - `EdgeCluster.canonical_description` 和 `description_variants` 分别写入独立向量 collection。
 - 复用已有 EdgeCluster 时会追加 description variant，并参与后续向量写入。

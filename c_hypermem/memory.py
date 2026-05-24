@@ -22,8 +22,8 @@ from c_hypermem.stores.vector_store import (
     collect_edge_cluster_canonical_index_items,
     collect_edge_cluster_variant_index_items,
     collect_node_content_index_items,
+    collect_node_local_graph_index_items,
     collect_node_summary_index_items,
-    collect_triple_index_items,
     collect_turn_dialogue_index_item,
     make_vector_point_id,
 )
@@ -228,7 +228,7 @@ class Memory:
         self.store.upsert_nodes(output.nodes)
         self._delete_retired_vectors(output.retired_nodes)
         self._index_nodes(output.nodes)
-        self._index_triples(output.nodes)
+        self._index_node_local_graphs(output.nodes)
         self.store.upsert_edges(output.edges)
         self.store.upsert_edge_clusters(output.edge_clusters)
         self._index_edge_clusters(output.edge_clusters)
@@ -241,10 +241,9 @@ class Memory:
             return
         ids_by_type: dict[str, list[str]] = {
             "triple": [
-                make_vector_point_id(node.namespace, "triple", triple.triple_id)
+                make_vector_point_id(node.namespace, "triple", node.node_id)
                 for node in nodes
-                for triple in node.local_graph.triples
-                if triple.triple_id is not None
+                if node.local_graph.triples
             ],
             "node_content": [
                 make_vector_point_id(node.namespace, "node_content", node.node_id)
@@ -279,11 +278,11 @@ class Memory:
             ],
         )
 
-    def _index_triples(self, nodes: list[Any]) -> None:
+    def _index_node_local_graphs(self, nodes: list[Any]) -> None:
         items = [
             item
-            for item in collect_triple_index_items(nodes)
-            if item.payload.get("owner_node_status") == "active" and item.payload.get("status") == "active"
+            for item in collect_node_local_graph_index_items(nodes)
+            if item.payload.get("node_status") == "active"
         ]
         self._index_items("triple", items)
 

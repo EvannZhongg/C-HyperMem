@@ -85,11 +85,9 @@ Memory = MemoryNodes + HyperEdges + EdgeClusters + LocalNodeGraphs
 
 重要调整：
 
-- 放弃显式多视角架构，不再维护固定的关系视角列表。
-- 不让 LLM 判断事实属于哪个视角。
 - 系统根据抽取出的实体、事件、事实、属性、角色、三元组和来源，构建或更新 `HyperEdges`。
 - 语义相近或成员重叠的 HyperEdge 不直接强行合并，而是优先挂入同一个 `EdgeCluster`。
-- 超边可以表达来源证据、实体状态、时间聚合、修正关系、任务进度、语义聚合等关系，但这些是普通 `edge_type`，不是一组固定投影视角。
+- 超边可以表达来源证据、实体状态、时间聚合、修正关系、任务进度、语义聚合等关系。
 - `fact`、`entity`、`event` 不作为不同内部 schema 维护，而是统一 `MemoryNode` 的默认 `node_labels`。
 
 依赖方向必须保持：
@@ -818,7 +816,7 @@ def resolve_entity_node_id(namespace, name, entity_type=None, aliases=None):
 }
 ```
 
-`edge_type` 是普通语义类型，不是固定投影视角。第一版可以支持少量通用类型：
+`edge_type` 是普通语义类型。第一版可以支持少量通用类型：
 
 - `evidence`：连接来源 turn / event / fact / tool result。
 - `state`：连接实体、属性事实和状态节点。
@@ -1626,7 +1624,6 @@ extraction_llm:
 
 - 不出现 `agent_memory_eval` 内部类名。
 - 不以 benchmark 字段作为核心必需项。
-- 不使用固定多视角配置块。
 - 所有 prompt 路径都相对于 `c_hypermem/prompts/`。
 
 ## 11. agent_memory_eval Adapter

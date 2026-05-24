@@ -1,6 +1,6 @@
 # 复合节点高阶关联 Memory 构思
 
-本文档只记录当前关于 C-HyperMem memory 结构的概念构思。这里的“高阶关联 / HyperEdge”是系统内部数据结构，不要求 LLM 直接生成，也不要求先定义一组固定“视角”。
+本文档只记录当前关于 C-HyperMem memory 结构的概念构思。这里的“高阶关联 / HyperEdge”是系统内部数据结构，不要求 LLM 直接生成。
 
 暂不在本文档展开检索流程、代码组织、评测接入和长期维护策略；这些内容放在 `development_architecture.md` 中。
 
@@ -22,8 +22,6 @@ Memory = MemoryNodes + HyperEdges + LocalNodeGraphs
 
 设计重点：
 
-- 不再显式维护固定多视角列表。
-- 不让 LLM 判断“这个事实属于哪个视角”。
 - 同一个 `MemoryNode` 可以挂到多个 `HyperEdge` 上；`fact`、`entity`、`event` 等只是节点标签，不参与节点身份。
 - 超边表示“这些节点在某个语义锚点下应该被一起看”，但这个锚点由系统根据抽取结果和已有记忆上下文生成。
 - 节点和超边的权重、访问次数、衰减等指标由系统后续计算，不由 LLM 输出。
@@ -626,7 +624,7 @@ activation time:
 
 ## 8. 当前结构摘要
 
-当前构思不依赖显式多视角，而是采用更轻的共享节点 + 稳定超边：
+当前构思应采用更轻的共享节点 + 稳定超边：
 
 ```text
 Memory = MemoryNodes + HyperEdges + EdgeClusters + LocalNodeGraphs

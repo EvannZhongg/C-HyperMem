@@ -11,8 +11,13 @@ from c_hypermem import Memory
 from c_hypermem.config import MemoryConfig
 from c_hypermem.embeddings import EmbeddingModelClient
 from c_hypermem.errors import IngestionNotConfiguredError
+from c_hypermem.pipeline.context import AssemblyContext
+from c_hypermem.pipeline.entity_resolution import EntityResolution
+from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
+from c_hypermem.pipeline.maintenance import GraphMaintenance, is_conflict
+from c_hypermem.pipeline.node_builder import NodeBuilder, collect_entities
 from c_hypermem.pipeline.extraction import ExtractionContext, LLMMemoryExtractor, _render_node_labels
-from c_hypermem.schema import MemoryExtraction
+from c_hypermem.schema import ExtractedAssertion, ExtractedEntity, MemoryExtraction
 from c_hypermem.utils.prompts import PromptRegistry
 
 
@@ -228,6 +233,61 @@ def test_conflicting_fact_retires_old_fact_and_adds_correction_edge(tmp_path):
     assert retired[0].attributes["object"] == "dog"
     assert any(edge.edge_type == "correction" for edge in edges)
     assert stats["fact_properties"] == 2
+
+
+def test_node_builder_delegates_local_graph_construction():
+    builder = NodeBuilder(LocalGraphBuilder())
+    context = AssemblyContext(namespace="builder_ns", metadata={"session_id": "S3", "date": "2024-01-05"}, current_turn=7)
+    subject = builder.build_or_update_entity_node(
+        ExtractedEntity(name="Alice", labels=["person"]),
+        resolution=EntityResolution(aliases={"Alice"}),
+        context=context,
+    )
+    fact = builder.build_fact_node(
+        ExtractedAssertion(
+            subject="Alice",
+            predicate="prefers",
+            object="morning interviews",
+            source_ref="user_input",
+        ),
+        subject,
+        context,
+    )
+
+    assert "preference" in fact.node_labels
+    assert fact.local_graph.triples[0].subject == "Alice"
+    assert fact.local_graph.triples[0].qualifiers["source_ref"] == "user_input"
+    assert subject.local_graph.attributes == {}
+
+
+def test_collect_entities_adds_event_participants_and_assertion_subjects():
+    extraction = MemoryExtraction.model_validate(
+        {
+            "entities": [{"name": "Alice"}],
+            "events": [{"summary": "A meeting happened.", "participants": [{"name": "Bob", "role": "speaker"}]}],
+            "assertions": [{"subject": "Project Atlas", "predicate": "status", "object": "green"}],
+        }
+    )
+
+    names = {entity.name for entity in collect_entities(extraction.events, extraction.assertions, extraction.entities)}
+
+    assert names == {"Alice", "Bob", "Project Atlas"}
+
+
+def test_graph_maintenance_conflict_predicate_policy():
+    old_fact = NodeBuilder().build_fact_node(
+        ExtractedAssertion(subject="Toby", predicate="is_a", object="dog"),
+        NodeBuilder().build_or_update_entity_node(
+            ExtractedEntity(name="Toby"),
+            resolution=EntityResolution(aliases={"Toby"}),
+            context=AssemblyContext(namespace="maint_ns", metadata={}, current_turn=0),
+        ),
+        AssemblyContext(namespace="maint_ns", metadata={}, current_turn=0),
+    )
+
+    assert is_conflict(old_fact, ExtractedAssertion(subject="Toby", predicate="is_a", object="cat"))
+    assert not is_conflict(old_fact, ExtractedAssertion(subject="Toby", predicate="likes", object="treats"))
+    assert isinstance(GraphMaintenance(), GraphMaintenance)
 
 
 class StaticExtractor:

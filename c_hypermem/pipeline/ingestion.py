@@ -4,7 +4,8 @@ from typing import Any
 
 from c_hypermem.config import MemoryConfig
 from c_hypermem.errors import IngestionNotConfiguredError
-from c_hypermem.pipeline.assembly import AssemblyContext, GraphAssembler
+from c_hypermem.pipeline.assembly import GraphAssembler
+from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.edge_cluster_builder import EdgeClusterBuilder
 from c_hypermem.pipeline.extraction import ExtractionContext, MemoryExtractor
 from c_hypermem.pipeline.hyperedge_builder import HyperEdgeBuilder

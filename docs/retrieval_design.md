@@ -107,6 +107,10 @@ Memory.search(query, namespace, top_k, metadata=None)
 当前实现已支持 `retrieval.query_analysis` 配置：
 
 ```yaml
+nlp:
+  # Optional spaCy model package name or local path. Relative paths are resolved from the current project working directory.
+  model_path: models/en_core_web_sm
+
 retrieval:
   # Query analysis modes: false disables analysis for evaluation; "llm" uses prompts/retrieval/query_analysis.md; "nlp" uses optional spaCy processing.
   query_analysis: false
@@ -116,7 +120,7 @@ retrieval:
 
 - `false`：禁用 query analysis。评测阶段建议使用该模式，避免 query 预处理对结果产生额外变量。
 - `llm`：调用 `c_hypermem/prompts/retrieval/query_analysis.md`，要求配置 `llm`。LLM 输出只作为 query metadata，不直接返回记忆、不生成 memory id、不生成分数。
-- `nlp`：使用可选 spaCy 策略，提供 `normalized_query/bm25_query/entities`。需要额外安装 `c-hypermem[nlp]` 和 `en_core_web_sm`。
+- `nlp`：使用可选 spaCy 策略，提供 `normalized_query/bm25_query/entities`。需要额外安装 `c-hypermem[nlp]`，并让 `nlp.model_path` 指向可加载的 spaCy 模型包名或本地模型目录。
 
 当前 `QueryAnalysis` 结构为：
 
@@ -135,7 +139,7 @@ class QueryAnalysis:
 
 - `false` 不做任何 query 派生分析。
 - `llm` 模式缺少 `config.llm` 时直接报错。
-- `nlp` 模式缺少 spaCy 或 `en_core_web_sm` 时直接报错；不做静默回退。
+- `nlp` 模式缺少 spaCy 或 `nlp.model_path` 指向的模型时直接报错；不做静默回退。
 - 当前检索策略不会根据 query analysis 做 preference/task/entity/time 等规则加分。
 
 ## 5. 召回通道设计

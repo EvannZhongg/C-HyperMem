@@ -83,7 +83,12 @@ class Memory:
             if config.llm is None:
                 raise ConfigError("retrieval.query_analysis='llm' requires config.llm.")
             query_analysis_llm = OpenAICompatibleLLM(config.llm)
-        self.retriever = Retriever(self.store, config.retrieval, query_analysis_llm=query_analysis_llm)
+        self.retriever = Retriever(
+            self.store,
+            config.retrieval,
+            nlp_config=config.nlp,
+            query_analysis_llm=query_analysis_llm,
+        )
         self._turn_counters: dict[str, int] = {}
 
     @classmethod

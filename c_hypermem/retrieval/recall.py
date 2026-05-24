@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from c_hypermem.config import RetrievalConfig
+from c_hypermem.config import NLPConfig, RetrievalConfig
 from c_hypermem.llms.base import LLMClient
 from c_hypermem.retrieval.context import compose_result_content
 from c_hypermem.retrieval.expansion import Candidate, EdgeExpansion
@@ -12,10 +12,17 @@ from c_hypermem.utils.time import decay_weight
 
 
 class Retriever:
-    def __init__(self, store: MemoryStore, config: RetrievalConfig, *, query_analysis_llm: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        config: RetrievalConfig,
+        *,
+        nlp_config: NLPConfig | None = None,
+        query_analysis_llm: LLMClient | None = None,
+    ) -> None:
         self.store = store
         self.config = config
-        self.analyzer = build_query_analyzer(config, llm=query_analysis_llm)
+        self.analyzer = build_query_analyzer(config, nlp_config=nlp_config, llm=query_analysis_llm)
         self.lexical = LexicalScorer()
         self.expansion = EdgeExpansion(store, config)
 

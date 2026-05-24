@@ -28,6 +28,10 @@ class ModelConfig(BaseModel):
     batch_size: int = 10
 
 
+class NLPConfig(BaseModel):
+    model_path: str = "models/en_core_web_sm"
+
+
 class IngestionConfig(BaseModel):
     event_mode: str = "interaction"
     context_window_messages: int = 3
@@ -181,6 +185,7 @@ class MemoryConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     llm: ModelConfig | None = None
     embedding: ModelConfig | None = None
+    nlp: NLPConfig = Field(default_factory=NLPConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     node_identity: NodeIdentityConfig = Field(default_factory=NodeIdentityConfig)

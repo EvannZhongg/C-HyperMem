@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
-from c_hypermem.config import RetrievalConfig
+from c_hypermem.config import NLPConfig, RetrievalConfig
 from c_hypermem.errors import ConfigError
 from c_hypermem.llms.base import LLMClient
 from c_hypermem.utils.prompts import PromptRegistry
@@ -43,13 +45,14 @@ class QueryAnalyzer(Protocol):
 def build_query_analyzer(
     config: RetrievalConfig,
     *,
+    nlp_config: NLPConfig | None = None,
     llm: LLMClient | None = None,
     prompt_registry: PromptRegistry | None = None,
 ) -> QueryAnalyzer:
     if config.query_analysis is False:
         return DisabledQueryAnalyzer()
     if config.query_analysis == "nlp":
-        return SpacyQueryAnalyzer()
+        return SpacyQueryAnalyzer(nlp_config or NLPConfig())
     if config.query_analysis == "llm":
         if llm is None:
             raise ConfigError("retrieval.query_analysis='llm' requires an LLM client or config.llm.")
@@ -79,20 +82,12 @@ class LLMQueryAnalyzer:
 
     def _render_prompt(self, query: str) -> str:
         prompt = self.prompt_registry.load("retrieval.query_analysis")
-        return (
-            f"{prompt.text.rstrip()}\n\n"
-            "# Query\n"
-            f"{query}\n\n"
-            "# Output JSON Shape\n"
-            "Return one JSON object with keys: normalized_query, bm25_query, entities, attributes.\n"
-            "entities must be a list of objects with string keys type and text.\n"
-            "attributes may contain query intent, time constraints, expected labels, or other retrieval hints.\n"
-            "Do not output memory IDs, scores, or retrieval results."
-        )
+        return prompt.text.replace("{{QUERY}}", query)
 
 
 class SpacyQueryAnalyzer:
-    def __init__(self) -> None:
+    def __init__(self, config: NLPConfig) -> None:
+        self.config = config
         self._nlp_full: Any | None = None
         self._nlp_lemma: Any | None = None
         self._lock = threading.Lock()
@@ -111,7 +106,7 @@ class SpacyQueryAnalyzer:
             return self._nlp_full
         with self._lock:
             if self._nlp_full is None:
-                self._nlp_full = _load_spacy_model(disable=None)
+                self._nlp_full = _load_spacy_model(self.config.model_path, disable=None)
         return self._nlp_full
 
     def _load_lemma(self) -> Any:
@@ -119,7 +114,7 @@ class SpacyQueryAnalyzer:
             return self._nlp_lemma
         with self._lock:
             if self._nlp_lemma is None:
-                self._nlp_lemma = _load_spacy_model(disable=["ner", "parser"])
+                self._nlp_lemma = _load_spacy_model(self.config.model_path, disable=["ner", "parser"])
         return self._nlp_lemma
 
     def _lemmatize_for_bm25(self, text: str) -> str:
@@ -140,20 +135,45 @@ class SpacyQueryAnalyzer:
         return _extract_entities_from_doc(doc)
 
 
-def _load_spacy_model(*, disable: list[str] | None) -> Any:
+def _load_spacy_model(model_path: str, *, disable: list[str] | None) -> Any:
     try:
         import spacy
     except ImportError as exc:
         raise ConfigError("retrieval.query_analysis='nlp' requires spaCy. Install c-hypermem[nlp].") from exc
+    resolved_model = _resolve_model_path(model_path)
     try:
         if disable is None:
-            return spacy.load("en_core_web_sm")
-        return spacy.load("en_core_web_sm", disable=disable)
-    except Exception as exc:
+            return spacy.load(resolved_model)
+        return spacy.load(resolved_model, disable=disable)
+    except Exception as path_exc:
+        target_dir = Path(resolved_model)
+        if target_dir.exists():
+            sys.path.insert(0, str(target_dir))
+            try:
+                if disable is None:
+                    return spacy.load("en_core_web_sm")
+                return spacy.load("en_core_web_sm", disable=disable)
+            except Exception:
+                try:
+                    sys.path.remove(str(target_dir))
+                except ValueError:
+                    pass
         raise ConfigError(
-            "retrieval.query_analysis='nlp' requires spaCy model en_core_web_sm. "
-            "Install it with: python -m spacy download en_core_web_sm"
-        ) from exc
+            "retrieval.query_analysis='nlp' requires a valid spaCy model. "
+            f"Configured nlp.model_path={model_path!r}. "
+            "Install a model package, or install one into the configured local path."
+        ) from path_exc
+
+
+def _resolve_model_path(model_path: str) -> str:
+    path = Path(model_path)
+    if path.exists():
+        return str(path)
+    if not path.is_absolute():
+        candidate = Path.cwd() / path
+        if candidate.exists():
+            return str(candidate)
+    return model_path
 
 
 _GENERIC_HEADS = {

@@ -8,6 +8,10 @@ owner: c_hypermem
 
 Analyze the query for entities, time constraints, preferences, tasks, and expected answer type.
 
+# Query
+
+{{QUERY}}
+
 # Requirements
 
 Return JSON only. The output is used as retrieval metadata, not as a final answer.

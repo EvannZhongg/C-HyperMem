@@ -9,6 +9,10 @@ storage:
 default_top_k: 10
 prompt_version: 0.1.0
 
+nlp:
+  # Optional spaCy model package name or local path. Relative paths are resolved from the current project working directory.
+  model_path: models/en_core_web_sm
+
 ingestion:
   event_mode: interaction
   context_window_messages: 3

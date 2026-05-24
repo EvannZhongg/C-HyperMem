@@ -334,16 +334,18 @@ class SQLiteStore:
         rows = self.conn.execute(
             """
             SELECT *
-            FROM (
-                SELECT *
+            FROM turns
+            WHERE namespace = ?
+              AND turn_index IN (
+                SELECT DISTINCT turn_index
                 FROM turns
                 WHERE namespace = ?
-                ORDER BY turn_index DESC, message_index DESC
+                ORDER BY turn_index DESC
                 LIMIT ?
-            )
+              )
             ORDER BY turn_index ASC, message_index ASC
             """,
-            (namespace, limit),
+            (namespace, namespace, limit),
         ).fetchall()
         return [_message_from_turn_row(row) for row in rows]
 

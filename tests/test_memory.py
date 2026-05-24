@@ -392,6 +392,42 @@ def test_context_window_uses_persisted_turn_table(tmp_path):
     assert stats["turn_messages"] == 2
 
 
+def test_context_window_limit_counts_turns_not_turn_messages(tmp_path):
+    extractor = RecordingWindowExtractor()
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "ingestion": {"context_window_messages": 2},
+        },
+        extractor=extractor,
+    )
+    namespace = "window_turn_limit_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("First user question.", namespace=namespace)
+    memory.add_memory(
+        "Second user question.",
+        namespace=namespace,
+        observations=[
+            {"type": "tool", "content": f"tool observation {index}"}
+            for index in range(5)
+        ],
+    )
+    memory.add_memory("Third user question.", namespace=namespace)
+    memory.close()
+
+    assert [message.content for message in extractor.windows[2].target] == ["Third user question."]
+    assert [message.content for message in extractor.windows[2].context] == [
+        "First user question.",
+        "Second user question.",
+        "tool observation 0",
+        "tool observation 1",
+        "tool observation 2",
+        "tool observation 3",
+        "tool observation 4",
+    ]
+
+
 def test_conflicting_fact_retires_old_fact_and_adds_correction_edge(tmp_path):
     extractor = SequenceExtractor(
         [

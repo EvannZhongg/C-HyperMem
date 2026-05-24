@@ -9,3 +9,4 @@ embedding:
   model: ${CHYPERMEM_EMBEDDING_MODEL}
   base_url: ${CHYPERMEM_EMBEDDING_BASE_URL}
   api_key: ${CHYPERMEM_EMBEDDING_API_KEY}
+  batch_size: 10

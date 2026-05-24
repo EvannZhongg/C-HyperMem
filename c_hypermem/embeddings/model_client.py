@@ -32,5 +32,10 @@ class EmbeddingModelClient:
         return self._client
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        response = self.client.embeddings.create(model=self.config.model, input=texts)
-        return [item.embedding for item in response.data]
+        embeddings: list[list[float]] = []
+        batch_size = max(1, self.config.batch_size)
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            response = self.client.embeddings.create(model=self.config.model, input=batch)
+            embeddings.extend(item.embedding for item in response.data)
+        return embeddings

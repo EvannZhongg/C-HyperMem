@@ -114,6 +114,7 @@ def test_default_config_includes_split_config_files():
     assert config.embedding.model == os.getenv("CHYPERMEM_EMBEDDING_MODEL", "${CHYPERMEM_EMBEDDING_MODEL}")
     assert config.embedding.base_url == os.getenv("CHYPERMEM_EMBEDDING_BASE_URL", "${CHYPERMEM_EMBEDDING_BASE_URL}")
     assert config.embedding.api_key == os.getenv("CHYPERMEM_EMBEDDING_API_KEY", "${CHYPERMEM_EMBEDDING_API_KEY}")
+    assert config.embedding.batch_size == 10
     assert default_raw["include"] == ["models.yaml", "node_labels.yaml"]
     assert "node_types" not in default_raw
     assert config.extraction.prompt == "extraction/memory_extraction.md"
@@ -140,6 +141,22 @@ def test_embedding_model_client_is_generic_entrypoint():
     client = EmbeddingModelClient.from_config(config.embedding)
 
     assert client.config.model == os.getenv("CHYPERMEM_EMBEDDING_MODEL", "${CHYPERMEM_EMBEDDING_MODEL}")
+
+
+def test_embedding_model_client_batches_requests():
+    client = EmbeddingModelClient.from_config(
+        {
+            "model": "embedding-test",
+            "batch_size": 2,
+        }
+    )
+    fake_client = FakeEmbeddingClient()
+    client._client = fake_client
+
+    embeddings = client.embed(["a", "b", "c", "d", "e"])
+
+    assert fake_client.inputs == [["a", "b"], ["c", "d"], ["e"]]
+    assert len(embeddings) == 5
 
 
 def test_maintenance_prompt_registry_loads_edge_prompts():
@@ -259,3 +276,28 @@ class StaticLLM:
 
     def generate_json(self, prompt):
         return self.payload
+
+
+class FakeEmbeddingClient:
+    def __init__(self):
+        self.inputs = []
+        self.embeddings = FakeEmbeddings(self)
+
+
+class FakeEmbeddings:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def create(self, *, model, input):
+        self.owner.inputs.append(list(input))
+        return FakeEmbeddingResponse(len(input))
+
+
+class FakeEmbeddingResponse:
+    def __init__(self, count):
+        self.data = [FakeEmbeddingItem(index) for index in range(count)]
+
+
+class FakeEmbeddingItem:
+    def __init__(self, index):
+        self.embedding = [float(index)]

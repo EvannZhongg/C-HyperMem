@@ -19,6 +19,7 @@ class ModelConfig(BaseModel):
     model: str
     base_url: str | None = None
     api_key: str | None = None
+    batch_size: int = 10
 
 
 class IngestionConfig(BaseModel):

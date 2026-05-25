@@ -1,58 +1,67 @@
 # C-HyperMem Memory 维护实现差异
 
-本文档对照 `docs/hypergraph_memory_architecture.md`、`docs/development_architecture.md`、`docs/current_implementation.md` 与当前代码，单独记录 memory 维护相关设计和实现差异。
+本文档对照 `docs/hypergraph_memory_architecture.md`、`docs/homogeneous_node_hyperedge_refactor.md`、`docs/current_implementation.md` 与当前代码，单独记录 memory 维护相关设计和实现差异。
 
 这里的“memory 维护”主要指：
 
-- 写入时对已有节点、事实、超边、簇和索引的复用、更新、退役与冲突处理。
+- 写入时对已有 `MemoryNode`、description-only `HyperEdge`、`EdgeCluster` 和索引的复用、更新、退役与冲突处理。
 - 检索访问后对 memory activation time 的更新。
 - 与维护相关的 prompt、配置、持久化和向量索引清理。
 
-不展开完整检索 pipeline，检索设计以 `retrieval_design.md` 和 `current_implementation.md` 为准。
+不展开完整检索 pipeline，检索设计以 `docs/current_implementation.md` 为准。
 
 ## 1. 总体结论
 
-当前实现已经形成了可运行的轻量维护闭环：
+当前实现已经从旧 `entities/events/assertions -> fact/event/entity builder -> typed edge` 写入方式切换为：
 
 ```text
 新增交互
-  -> 一次 LLM 抽取
-  -> entity alias 精确复用
-  -> 同 node_id 的节点合并
-  -> assertion 构造候选 fact
-  -> 同一 subject_node_id + predicate 下存在 active 旧 fact 时触发 fact_merge
-  -> merge/update 复用旧 fact，keep_separate 写入新 fact
-  -> needs_contradiction_check 时继续触发 contradiction_check
-  -> 仅在 LLM 判定 contradiction 时标记旧 fact/triples 作废
-  -> 创建 correction edge
-  -> 更新 SQLite / FTS / 向量索引
+  -> 一次 LLM 抽取 nodes / edge_summaries
+  -> NodeBuilder 构建同构 MemoryNode
+  -> entity alias 精确复用已有 entity node
+  -> 同 node_id 的节点轻量合并
+  -> LocalGraphBuilder 规范化和去重 node 内 triples
+  -> edge_summary_refs 反向组装 description-only HyperEdge
+  -> EdgeClusterBuilder 复用或创建 EdgeCluster，并追加 description variants
+  -> GraphMaintenance post-assembly hook
+  -> 写入 SQLite / FTS / 向量索引
 ```
 
-但它仍低于长期设计中的完整维护系统：
+当前维护能力是**轻量、保守、无规则兜底**的：
 
-- `fact_merge.md` 已接入主写入流程；`edge_merge.md`、`edge_conflict_check.md`、`edge_cluster_merge.md` 目前仍只存在于 prompt/config/registry 中，没有接入主写入流程。
-- HyperEdge 只做确定性构建和 ID 去重，没有候选召回、LLM 合并、成员追加或版本化维护。
-- EdgeCluster 只按确定性 topic fingerprint 复用，并追加 description variants；没有后台 cluster merge，也没有基于 LLM 的簇冲突健康检查。
-- LocalNodeGraph 维护仍很浅，主要来自 event participants 和 assertion SPO；旧 fact 退役时，节点与其内部 triple 都会标记为 retired/invalidated，但尚未表达复杂 triple-level time qualifiers。
-- 时间维护已覆盖 created/inserted/updated/access_count 等基础字段，但设计中的 recency decay、access boost、边访问时间、复杂 valid_time 维护尚未接入。
+- `GraphMaintenance` 当前是 no-op hook，只负责保留维护扩展点。
+- 当前主写入路径不调用旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md`。
+- 不存在旧 `fact_property_index`、`edge_type/relation/polarity/roles`、`role_in_edge/edge_relation` 兼容路径。
+- 节点复用只包含：
+  - 同 deterministic `node_id` 的节点合并。
+  - 带 `entity` label 的节点通过 `entity_alias_index` 精确复用。
+- 当前不做规则化冲突判断、事实退役、fallback 抽取或旧数据迁移。
 
-## 2. 文档预期与当前实现对照
+低于长期设计的部分：
 
-| 维护点 | 文档预期 | 当前实现 | 差异判断 |
-| --- | --- | --- | --- |
-| 一次抽取，系统组装 | LLM 只输出 `entities/events/assertions/sources`，系统维护节点、边、簇和 ID | `LLMMemoryExtractor` 一次抽取，`GraphAssembler` 组装；LLM 不生成系统 ID | 已对齐 |
-| Entity alias resolution | 实体别名对齐先于 ID 生成，可匹配 canonical/display/aliases/entity_type | `EntityResolver` 使用 normalized aliases + 可选 `entity_type` 精确查 `entity_alias_index` | 部分实现，仅精确匹配，无复杂消歧 |
-| 节点复用和合并 | 同一 canonical fingerprint 复用节点，标签可累积，local graph 可合并 | `merge_node()` 合并 labels/attributes/metadata/local_graph，更新 `updated_at/updated_turn` | 已实现轻量版本 |
-| fact merge/update | `fact_merge.md` 判断 merge/update/keep separate/needs contradiction | 同一 `property_key` 下存在 active 旧 fact 时先调用 `fact_merge.md`；支持多个旧 fact block，LLM 通过 `existing:0/1/...` refs 返回受影响候选 | 已接入轻量主流程 |
-| fact contradiction | 同一属性候选冲突时调用 `contradiction_check.md`，旧 fact 可退役/失效 | 仅当 `fact_merge` 返回 `needs_contradiction_check` 时调用；contradiction + retired/invalidated 才退役 | 已接入核心路径 |
-| 无维护 LLM 时的冲突处理 | 文档强调不要规则兜底 | overlap fact 需要维护 LLM；无 LLM 直接抛 `RuntimeError` | 与当前约束一致 |
-| HyperEdge merge | 成员重叠只作召回信号，需 relation/role/polarity/time 兼容后保守复用或追加 | `BasicHyperEdgeBuilder` 只创建 evidence/state/correction；按 deterministic fingerprint 去重 | 未接入候选召回和 LLM merge |
-| EdgeCluster 维护 | 相关边聚合到 cluster，可有 conflict_state、description variants、后台 merge | 按 `cluster_hint` / description fingerprint 复用 cluster，追加 variants；correction 新簇置 `contains_conflict` | 部分实现，无后台整理和 LLM conflict check |
-| LocalNodeGraph 维护 | 所有节点统一 local graph，支持 triples/attributes/roles/qualifiers/time scope | event participants、entity type、fact SPO；fact triple 可挂 `scope_edge_id/role_in_edge/edge_relation` | 部分实现，结构浅 |
-| 退役事实的索引维护 | retired fact 不应被 active recall 命中 | retired node 不进 FTS；node-local-graph/node_content/node_summary 向量点会删除；fact_property_index 行置 retired/invalidated | 基本对齐 |
-| 退役事实的 triple 状态 | 旧 fact 和其局部 triple 应能表达 superseded/invalidated | 退役旧 fact 时同步设置 `LocalTriple.status/superseded_by/invalidated_by` | 已补齐基础状态同步 |
-| 时间维护 | world/lifecycle/activation 分层，写入、更新、访问分别维护 | `make_time_bundle()`、`touch_node_update()`、`touch_node_access()` 已覆盖节点基础时间；检索后只更新命中 nodes | 部分实现，edge access/decay 未用 |
-| 后台维护 | `edge_cluster_merge` 可在 memory 增长后触发宏观整理 | `background_maintenance.enabled=false`，没有调度器和触发代码 | 未接入 |
+- 还没有统一 MemoryNode merge/update/conflict 的 LLM 维护链。
+- 还没有 description-only HyperEdge 的候选召回、复用、成员追加或版本化维护。
+- EdgeCluster 只做确定性聚合与 description variant 追加，没有后台 cluster merge 或冲突健康检查。
+- access maintenance 只更新命中 nodes，不更新 HyperEdge / EdgeCluster。
+- `time.relative_decay`、`access_boost`、temporal filter 尚未进入评分和维护流程。
+
+## 2. 当前维护状态对照
+
+| 维护点 | 当前实现 | 差异判断 |
+| --- | --- | --- |
+| 一次抽取 | LLM 只输出 `nodes/edge_summaries/metadata`；schema 拒绝旧 `entities/events/assertions/sources` | 已对齐新架构 |
+| Node summary | `ExtractedNode.summaries` 可为空；`NodeBuilder` 将非空 summaries 拼成 `MemoryNode.summary` | 不保证每个 node 都有 summary |
+| Node summary 维护 | `merge_node()` 仅当旧 summary 为空且 incoming summary 非空时补写；不会覆盖已有 summary | 当前保守，缺少 summary merge/rewrite 维护 |
+| Entity alias 复用 | 仅带 `entity` label 的节点使用 `canonical_text + metadata.aliases` 写入/查询 alias index | 已实现精确复用，不做模糊消歧 |
+| 普通节点复用 | `node_id = hash(namespace + fingerprint)`；同 ID 时合并 labels/attributes/metadata/local_graph | 已实现轻量合并 |
+| LocalGraph 维护 | 只消费 `ExtractedNode.triples`；按 normalized SPO 去重合并 | 已对齐同构节点路径 |
+| HyperEdge 构建 | 由 `edge_summaries[].description` + member nodes 构建；schema/DB 不含 `edge_type/relation` | 已切到 description-only |
+| HyperEdge merge | 仅按 deterministic `edge_id` 批内去重和 DB upsert；无候选召回或 LLM merge | 未接入 |
+| EdgeCluster 维护 | 按 edge description / optional metadata fingerprint 复用 cluster，追加 description variants | 轻量实现 |
+| 维护 prompt | prompt registry 仍保留旧 prompt 文件；主路径不调用 | 待泛化或删除 |
+| 退役/冲突 | 当前主路径没有 node conflict 判断、retire/invalidated 维护链 | 未接入 |
+| 向量索引维护 | upsert active nodes/edges/clusters；retired nodes 的 node vectors 有删除入口，但当前主路径几乎不产生 retired nodes | 部分实现 |
+| 访问维护 | `Memory.search()` 后对结果中的 nodes 调用 `touch_node_access()` | 只覆盖 nodes |
 
 ## 3. 当前真实维护链路
 
@@ -70,166 +79,89 @@
 2. 分配 `turn_id` / `turn_index`。
 3. 把原始消息写入 `turns` 表。
 4. 将最近 K 个 turn messages 作为 context，把本次消息作为 target 交给 extractor。
-5. 调用 `IngestionPipeline` 和 `GraphAssembler` 生成 nodes / retired_nodes / edges / clusters / indexes。
-6. 先 upsert nodes，再删除 retired nodes 的向量点，再 upsert edges/clusters/indexes；merge/update 后的旧 node 和 keep_separate 后的新 node 都会进入本轮 nodes 输出并重新索引。
+5. `LLMMemoryExtractor` 或显式 extractor 返回 `MemoryExtraction(nodes, edge_summaries, metadata)`。
+6. `GraphAssembler` 生成 nodes / edges / edge_clusters / edge_cluster_members / entity_aliases。
+7. `GraphMaintenance.apply(...)` 当前原样返回。
+8. `Memory._persist_output(...)` 写入 SQLite，并更新 FTS / Qdrant side indexes。
 
-实现差异：
+当前实现要点：
 
-- 文档中的“增量 target + recent context”已经实现。
-- 应用层 `ingestion_cache/prefix_hash/cursor` 已删除，和当前文档一致。
-- `add(messages)` 会逐条消息模拟增量 target，而不是把整段历史一次性抽取成一个 target。
+- context 只用于消解 target 中的指代、省略和相对表达；不会单独从 context 生成 memory。
+- 系统将当前 `turn_id` 写入 `metadata.turn_ids`，再由 `source_metadata()` 注入 node / edge 的 `source_turn_ids`。
+- 原始 turns 与结构化 memory graph 分离。
 
-### 3.2 实体维护
+### 3.2 Node 构建与 summary 行为
 
 代码入口：
 
-- `c_hypermem/pipeline/entity_resolution.py`
 - `c_hypermem/pipeline/node_builder.py`
 - `c_hypermem/pipeline/graph_utils.py`
-- `c_hypermem/stores/sqlite_store.py`
+- `c_hypermem/schema.py`
 
-当前行为：
+当前 `ExtractedNode` 字段：
 
-- 从显式 entities、event participants、assertion subjects 收集实体候选。
-- 使用 entity name + aliases 形成 alias 集合。
-- `find_entity_alias(namespace, normalized_aliases, entity_type)` 精确查库。
-- 命中则复用旧 `MemoryNode`，并追加标签、aliases、attributes、metadata。
-- 未命中则生成新的 canonical fingerprint 和 `node_id`。
-- `entity_alias_index` 会持久化 normalized alias -> shared node_id。
+```text
+ref
+labels
+canonical_text
+summaries
+triples
+edge_summary_refs
+metadata
+```
 
-和文档差异：
+`MemoryNode.summary` 的来源：
 
-- 已满足“别名对齐先于 ID 生成”的核心方向。
-- 目前没有 LLM 实体消歧、模糊匹配、display_name 特殊匹配或跨上下文 disambiguation。
-- `entity_type` 只作为可选精确过滤条件，不是完整实体类型系统。
+- `NodeBuilder.build_node()` 读取 `ExtractedNode.summaries`。
+- 会过滤空字符串。
+- 用空格拼接为单个 `MemoryNode.summary`。
+- 如果 LLM 没给 summaries，summary 就是空字符串。
+- 空 summary 不会写入 `node_summary` 向量。
 
-### 3.3 事实维护
+同一 node 未来再次被抽取出来时：
+
+- 如果 incoming node 与已有 node 同 `node_id`，或 entity alias 命中已有 entity node，则进入 `merge_node(existing, incoming, context)`。
+- 当前 merge 行为：
+  - labels 取并集。
+  - attributes / metadata 做深合并。
+  - local_graph triples 按 normalized SPO 去重追加。
+  - `existing.summary` 非空时保持不变。
+  - 只有 `existing.summary` 为空且 `incoming.summary` 非空时，才补写 summary。
+  - `content` 同理，只有旧 content 为空时才补写。
+  - 更新 `updated_at/updated_turn`。
+
+因此当前 summary 维护是**只补缺、不重写、不总结历史**。这避免无维护 LLM 时误改已有记忆，但也意味着：
+
+- 新抽取 summary 更完整时不会自动替换旧 summary。
+- 多次来源累积后不会自动生成聚合 summary。
+- summary 与新增 triples/metadata 可能逐渐不同步。
+
+下一阶段若要维护 summary，应引入明确的 LLM summary maintenance，而不是规则拼接或覆盖。
+
+### 3.3 Entity alias 维护
 
 代码入口：
 
 - `c_hypermem/pipeline/assembly.py`
-- `c_hypermem/pipeline/maintenance.py`
-- `c_hypermem/prompts/maintenance/contradiction_check.md`
 - `c_hypermem/stores/sqlite_store.py`
 
 当前行为：
 
-1. 每条 assertion 先构造候选 fact node。
-2. `property_key = subject_node_id + compact(predicate)`。
-3. 查找同一 property_key 下 active 旧 fact。
-4. 若没有旧 fact，候选 fact 正常写入 nodes、fact property index、state/evidence edge 和向量索引。
-5. 若存在旧 fact，先调用 `maintenance.fact_merge`。该 prompt 使用显式占位符：
+- 只有 node labels 中包含 `entity` 时才参与 alias index。
+- alias 候选来自：
+  - node 的 `canonical_text`
+  - LLM 显式输出的 `metadata.aliases`
+- 写入 `entity_alias_index(namespace, normalized_alias, entity_type, node_id, source_count, updated_at)`。
+- 新 entity node 构建时，会先用 normalized aliases 查询已有 alias entry。
+- 命中后加载已有 node 并调用 `merge_node()`。
 
-```text
-{{NEW_FACT}}
-{{NEW_FACT_SOURCE}}
-{{EXISTING_FACTS}}
-{{STRICT_JSON_SHAPE}}
-```
+边界：
 
-其中 `{{EXISTING_FACTS}}` 支持多个旧事实，系统按如下自然语言 block 渲染：
+- 这不是规则化抽取；不会从文本中猜别名。
+- 不对非 entity label 建 alias index。
+- 不做模糊匹配、跨样本同名消歧或 LLM entity merge。
 
-```text
-existing:0
-Fact: Alice loves tea.
-Source:
-User said: "I really love tea."
-
-existing:1
-Fact: Alice loves green tea.
-Source:
-User said: "Green tea is my favorite."
-```
-
-LLM 不接收 `turn_ids/node_id/fact_node_id/property_key` 等内部字段，只通过 `affected_existing_refs` 返回 `existing:0/1/...`。系统内部负责把 ref 映射回旧 fact node。
-
-6. `fact_merge` 的决策会分流：
-
-| decision | 当前处理 |
-| --- | --- |
-| `merge` | 复用旧 fact，不创建新 fact；合并 labels/attributes/metadata/local_graph，更新 `updated_at/updated_turn`，旧 node 重新 upsert 与重新索引。 |
-| `update` | 复用旧 fact node_id，用 `merged_fact` 或新 fact 文本更新 content/summary/SPO/local graph，旧 node 重新 upsert 与重新索引。 |
-| `keep_separate` | 不操作旧 fact，候选新 fact 正常入库并写入 node_content/node_summary/node-local-graph 向量索引。 |
-| `needs_contradiction_check` | 只把 `affected_existing_refs` 对应旧 fact 传入 `contradiction_check`。 |
-
-7. `contradiction_check` 仅当 `fact_merge` 路由到 `needs_contradiction_check` 时触发。仅当返回：
-
-```json
-{
-  "conflict_state": "contradiction",
-  "recommended_old_status": "retired|invalidated"
-}
-```
-
-才会：
-
-- 将旧 fact node 标为 retired 或 invalidated。
-- 将旧 fact 的 local triples 同步标为 retired 或 invalidated，并写入 `superseded_by/invalidated_by`。
-- 设置 `superseded_by` / `invalidated_by` 指向新 fact。
-- 设置 `status_reason` / `status_updated_at`。
-- 必要时更新旧 fact 的 `valid_time.end`。
-- 创建 `correction` HyperEdge。
-- 写入旧 fact 的 retired/invalidated property index 行。
-- 删除旧 fact 的 node-local-graph、node_content、node_summary 向量点。
-
-和文档差异：
-
-- `fact_merge.md` 已接入，但触发条件仍故意收窄到同一 `property_key` 下 active 旧 fact；不会跨 predicate 或通过向量相似度找候选。
-- `merge/update` 当前复用旧 fact node，不新增 state/evidence edge；新来源主要通过 metadata/local_graph 合并体现。
-- `keep_separate` 会正常创建新 fact 和 state/evidence edge，并触发新 fact 向量索引。
-- 若同一 property_key 下有旧 fact 且没有维护 LLM，当前选择抛错，而不是静默跳过或规则判断。
-
-### 3.4 HyperEdge 维护
-
-代码入口：
-
-- `c_hypermem/pipeline/hyperedge_builder.py`
-- `c_hypermem/pipeline/graph_utils.py`
-- `c_hypermem/stores/sqlite_store.py`
-
-当前只内置三类边：
-
-- `evidence`: event node 支持一组 extracted fact nodes。
-- `state`: subject entity + fact + optional event。
-- `correction`: new fact invalidates old fact。
-
-当前行为：
-
-- `edge_id` 由 description + edge_type + relation + roles + source_scope 的 fingerprint 生成。
-- `member_signature` 由 node_ids + roles 生成。
-- `dedupe_edges()` 只按 `edge_id` 做批内去重。
-- SQLite upsert edge 时会先删除该 edge 的旧 members，再按当前 node_ids/roles 重写 member 表。
-
-和文档差异：
-
-- 没有实现“召回相似既有 HyperEdge -> LLM 判断 reuse/append/version/new_edge”。
-- `edge_merge.md` 未被调用。
-- `member_version` 当前保持默认值，成员变化没有显式版本递增逻辑。
-- 成员重叠不会触发任何合并或冲突检查，符合“保守不合并”的底线，但低于设计中的维护能力。
-
-### 3.5 EdgeCluster 维护
-
-代码入口：
-
-- `c_hypermem/pipeline/edge_cluster_builder.py`
-- `c_hypermem/stores/sqlite_store.py`
-
-当前行为：
-
-- 对每条新 edge 生成 cluster label 和 cluster description。
-- state edge 优先使用 `cluster_hint.kind/subject_node_id/predicate` 生成 cluster fingerprint。
-- 若同批或库中已有同 fingerprint cluster，则复用并追加 description variant。
-- correction edge 创建/进入的 cluster relation 为 `updates`，其他多为 `supports`。
-- 新建 correction cluster 时 `conflict_state="contains_conflict"`；普通 cluster 为 `none`。
-
-和文档差异：
-
-- `edge_conflict_check.md` 未被调用，因此新边进入 cluster 后不会由 LLM 更新 cluster health。
-- `edge_cluster_merge.md` 未被调用，后台宏观整理没有调度器。
-- cluster 之间没有 cross-link 或 merge 关系表。
-- 复用策略是确定性 fingerprint，不做语义相似 cluster 召回。
-
-### 3.6 LocalNodeGraph 维护
+### 3.4 LocalGraph 维护
 
 代码入口：
 
@@ -239,19 +171,75 @@ LLM 不接收 `turn_ids/node_id/fact_node_id/property_key` 等内部字段，只
 
 当前行为：
 
-- event node: participants -> `participated_as` triples 和 roles。
-- entity node: entity_type -> local_graph attributes。
-- fact node: assertion SPO -> 单条 LocalTriple，polarity -> local_graph attributes。
-- fact triple 被挂入 edge 时会补 `scope_edge_id`、`role_in_edge`、`edge_relation`。
-- 同 node merge 时，local graph 按 normalized SPO 去重合并。
-- `fact_merge=update` 时会用新 assertion 的 SPO 替换旧 fact 的 local graph triple。
-- `contradiction_check` 退役旧 fact 时，会同步把旧 fact 的 local triples 标记为 retired/invalidated。
+- 每个 node 都可以携带 `ExtractedNode.triples`。
+- `LocalGraphBuilder.build_node()` 对 incoming triples 按 normalized `(subject, predicate, object)` 去重。
+- `merge_local_graph()` 对 existing 和 incoming local graph 做同样的 SPO 去重追加。
+- SQLite `triples` 表持久化 node 内 triples。
+- `HyperEdge` scope 会写入 triple 的：
+  - `scope_edge_id`
+  - qualifiers 中的 `scope_edge_id`
+  - qualifiers 中的 `edge_description`
 
-和文档差异：
+已删除：
 
-- 尚未表达工具调用、任务状态、事件内部复杂关系、triple-level time qualifiers。
-- LocalTriple 的状态同步已覆盖基础 fact 退役，但还没有维护 triple-level valid time 或复杂 qualifier。
-- LocalGraphBuilder 的 `build(nodes)` 当前是 no-op，真正构建发生在 NodeBuilder 调用具体 build_* 方法时。
+- 不再按 event/fact/entity label 写死 local graph。
+- 不再有 local graph roles。
+- 不再写 `role_in_edge` / `edge_relation`。
+- 不再有 `polarity` attribute 主路径。
+
+缺口：
+
+- triple-level 冲突、退役、valid_time 维护尚未接入。
+- 工具调用、任务状态、观察结果等复杂结构仍完全依赖 LLM 输出 triples，代码不做规则抽取。
+
+### 3.5 HyperEdge 维护
+
+代码入口：
+
+- `c_hypermem/pipeline/hyperedge_builder.py`
+- `c_hypermem/pipeline/assembly.py`
+- `c_hypermem/stores/sqlite_store.py`
+
+当前行为：
+
+- `ExtractedEdgeSummary.description` 是 edge 的核心语义。
+- `GraphAssembler` 根据 `node.edge_summary_refs` 反向收集成员 nodes。
+- `BasicHyperEdgeBuilder.build_from_summary()` 创建 `HyperEdge(description, node_ids, metadata, time)`。
+- `edge_id` 由 description、member_node_ids、source_turn_ids、edge_ref 生成 fingerprint 后派生。
+- `member_signature` 由 node_ids 生成。
+- SQLite `hyper_edges` 表不包含 `edge_type/relation/polarity`。
+- SQLite `hyper_edge_members` 表不包含 role。
+
+当前没有：
+
+- 相似 HyperEdge 召回。
+- description-only edge merge prompt 调用。
+- member append/version 判断。
+- edge retired/invalidated 维护。
+- edge access time 更新。
+
+### 3.6 EdgeCluster 维护
+
+代码入口：
+
+- `c_hypermem/pipeline/edge_cluster_builder.py`
+- `c_hypermem/stores/sqlite_store.py`
+
+当前行为：
+
+- 对每条 concrete HyperEdge 生成或复用一个 EdgeCluster。
+- 默认 cluster label 为 `memory_context`。
+- cluster description 当前来自 edge description。
+- fingerprint 默认基于 cluster description + label。
+- 同 fingerprint cluster 命中时追加 `description_variants`。
+- `EdgeClusterMember.relation_to_cluster` 当前仍存在，默认多为 `supports`；这是 cluster 内部成员关系，不是 HyperEdge `relation` 字段。
+
+当前没有：
+
+- EdgeCluster 相似向量召回。
+- LLM cluster merge。
+- LLM conflict health check。
+- 后台维护调度器。
 
 ### 3.7 索引与访问维护
 
@@ -260,61 +248,219 @@ LLM 不接收 `turn_ids/node_id/fact_node_id/property_key` 等内部字段，只
 - `c_hypermem/memory.py`
 - `c_hypermem/stores/sqlite_store.py`
 - `c_hypermem/stores/vector_store.py`
+- `c_hypermem/retrieval/vector_recall.py`
 - `c_hypermem/utils/time.py`
 
-当前行为：
+当前 SQLite / FTS：
 
-- SQLite canonical store 是权威数据源。
-- active node 会进入 `nodes_fts`；retired/invalidated node upsert 时会先删除旧 FTS 行且不再插入。
-- `fact_merge=merge/update` 的旧 fact node 会重新 upsert 并重新写入 node_content、node_summary 和 node-local-graph 向量。
-- `fact_merge=keep_separate` 的新 fact 会作为 active node 正常写入 node_content、node_summary 和 node-local-graph 向量。
-- retired nodes 的以下向量点会删除：
-  - `triple` collection 中的 node-local-graph 点。
-  - `node_content` 点。
-  - `node_summary` 点。
-- `edge_cluster_canonical`、`edge_cluster_variant`、`turn_dialogue` 会写入向量 collection，但当前检索主流程尚未使用 cluster/turn dialogue 向量召回。
-- `Memory.search()` 返回后，会对结果中 `metadata.edge_nodes` 的 node 调用 `touch_node_access()`，更新 `last_access_turn/access_count`。
+- active node 写入 `nodes_fts`。
+- 非 active node upsert 时会删除旧 FTS 行且不再插入。
 
-和文档差异：
+当前 Qdrant collections：
 
-- 访问维护只更新 nodes，不更新 HyperEdge / EdgeCluster 的 access_count。
-- `time.relative_decay` 和 `access_boost` 已配置，但当前检索评分没有接入。
-- 退役节点的 EdgeCluster variant 向量不会因旧 fact 退役而删除；如果 variant 文本引用旧 fact，后续需要单独维护策略。
+- `node_content`
+- `node_summary`
+- `node_local_graph`
+- `hyper_edge_description`
+- `edge_cluster_canonical`
+- `edge_cluster_variant`
+- `turn_dialogue`
 
-## 4. 当前实现优先级判断
+当前 node-local-graph embedding 文本：
 
-以下当前实现选择与文档方向一致，建议保持：
+```text
+<node.content>
+- <triple 1 subject predicate object>
+- <triple 2 subject predicate object>
+```
 
-- 维护 prompt 按候选触发，不在每次写入时无条件串联多轮 LLM。
-- 无维护 LLM 时不做规则兜底，避免静默误退役事实。
+不再加入 `Core content:` / `Local graph:` 等语义注释。
+
+当前 edge indexing：
+
+- 每条 concrete `HyperEdge.description` 写入 `hyper_edge_description` collection。
+- EdgeCluster canonical / variants 仍分别写入独立 collection。
+- 当前检索主流程尚未使用 `hyper_edge_description`、EdgeCluster 或 turn_dialogue 向量召回；它们是可用索引资产。
+
+当前访问维护：
+
+- `Memory.search()` 返回后，会对结果 `metadata.edge_nodes` 中的 nodes 调用 `touch_node_access()`。
+- 只更新 node 的 `last_access_turn/access_count`。
+- 不更新 HyperEdge / EdgeCluster access time。
+
+## 4. 下一阶段维护重构建议
+
+### 4.1 维护重构的边界
+
+下一阶段应把维护对象从旧 fact/property 改成：
+
+```text
+MemoryNode
+HyperEdge(description-only)
+EdgeCluster
+LocalTriple
+Indexes
+```
+
+禁止重新引入：
+
+- 规则化抽取。
+- fallback 抽取。
+- `fact_property_index`。
+- `edge_type/relation/polarity/roles` 作为 HyperEdge schema 或 DB 字段。
+- 旧数据兼容迁移。
+
+### 4.2 MemoryNode 维护
+
+建议新增 node-level maintenance，而不是恢复 fact-level maintenance：
+
+- 候选召回应先来自确定性信号：
+  - 同 `node_id`。
+  - entity alias 精确命中。
+  - 可选：向量召回出的同 namespace active nodes。
+- LLM 维护只在有明确候选时触发。
+- 无 LLM 或 LLM 失败时应显式失败，不做规则兜底。
+
+待定义决策：
+
+```text
+reuse_node
+update_node
+keep_separate
+retire_existing
+needs_review
+```
+
+summary 维护建议：
+
+- 不要用字符串拼接或简单覆盖维护 summary。
+- 可新增 `memory_node_summary_maintenance.md` 或合并进 node merge prompt。
+- 输入应包含：
+  - incoming node canonical_text / summary / triples
+  - existing node canonical_text / summary / triples
+  - source_turn_ids
+  - recent metadata
+- 输出应明确：
+  - 是否更新 `summary`
+  - 是否更新 `content`
+  - 是否追加 triples
+  - 是否保留旧 summary
+- summary 更新后必须重新写入 `node_summary` 向量。
+
+### 4.3 LocalTriple 维护
+
+当前 triples 只去重追加。下一阶段可增加：
+
+- triple-level status 维护：
+  - active
+  - retired
+  - invalidated
+  - uncertain
+- triple-level superseded_by / invalidated_by。
+- valid_time / qualifier 维护。
+
+但不应通过 predicate 白名单或硬编码多值谓词判断冲突。冲突必须由候选召回 + LLM 语义判断完成。
+
+### 4.4 HyperEdge 维护
+
+当前 concrete HyperEdge 保守创建。下一阶段可接入 description-only edge maintenance：
+
+- 使用 `hyper_edge_description` 向量召回候选 edges。
+- 成员重叠只能作为召回信号，不能作为合并依据。
+- LLM 输入应包含：
+  - candidate edge description
+  - candidate member node summaries / canonical_text
+  - candidate source_turn_ids
+  - existing edge descriptions
+  - existing member node summaries / canonical_text
+  - source/time metadata
+- 输出应避免 typed relation/roles/polarity。
+
+候选决策可为：
+
+```text
+reuse_edge
+append_members
+new_version
+new_edge
+needs_review
+```
+
+维护动作：
+
+- `reuse_edge`: 复用 edge_id，追加 source metadata / description variant。
+- `append_members`: 更新 node_ids、member_signature、member_version。
+- `new_version`: 新建 edge 或版本化旧 edge，具体策略需先定。
+- `new_edge`: 保持独立 edge。
+- `needs_review`: 标记 uncertain 或保守新建。
+
+### 4.5 EdgeCluster 维护
+
+下一阶段可分两层：
+
+1. 写入时轻量维护：
+   - 新 edge 挂入 cluster 后，可由 LLM 判断 `relation_to_cluster` 和 `conflict_state`。
+   - 只在候选 cluster 明确时触发。
+
+2. 后台维护：
+   - 根据 `background_maintenance.trigger_every_k_writes` 低频触发。
+   - 使用 EdgeCluster canonical / variants 向量召回相似 clusters。
+   - 调用 cluster merge prompt。
+
+仍需保持：
+
+- EdgeCluster 聚合不等于 HyperEdge merge。
+- conflict cluster 可以容纳相互冲突的 concrete edges。
+
+### 4.6 索引维护
+
+下一阶段维护动作必须同步索引：
+
+- node summary/content/local_graph 变化后重写对应向量点。
+- edge description / members / metadata 变化后重写 `hyper_edge_description` 向量点。
+- cluster canonical / variants 变化后重写 cluster 向量点。
+- node retired/invalidated 后删除 node_content、node_summary、node_local_graph 点。
+- edge retired/invalidated 后删除或过滤 `hyper_edge_description` 点。
+- cluster retired/merged 后删除或过滤 cluster 向量点。
+
+当前 `QdrantVectorStore.delete_namespace()` 可以 reset namespace；更细粒度删除已支持 point ids，但 edge/cluster retired path 还没接入。
+
+## 5. 当前实现优先级判断
+
+建议保持的原则：
+
+- 一次抽取，系统组装。
+- LLM 不生成系统 ID、来源字段、typed-edge 字段或构建时间。
+- 维护 prompt 按候选触发，不无条件串联多轮 LLM。
+- 无维护 LLM 时不做规则兜底。
 - HyperEdge 保守新建，不因成员重叠直接合并。
-- EdgeCluster 聚合不等于 HyperEdge merge，具体边仍保留独立语义。
+- EdgeCluster 聚合不等于 HyperEdge merge。
 - SQLite 是 canonical store，向量索引是可重建旁路索引。
-- 原始 turns 与结构化 graph nodes 分离。
+- 原始 turns 与结构化 memory graph 分离。
 
-以下差异是后续应优先补齐的维护缺口：
+优先补齐项：
 
-1. 为 `fact_merge` 增加更细的多候选处理策略，例如当多个 old facts 同时被 `merge/update` 命中时是否允许合成一个 canonical fact。
-2. 明确 `merge/update` 是否需要补充 evidence edge 或 source edge；当前只更新旧 fact node 和索引，不新增事实边。
-3. 为 HyperEdge 实现候选召回和 `edge_merge.md` 调用，但仍保持成员重叠只作召回信号。
-4. 接入 `edge_conflict_check.md`，在 edge 挂入 cluster 后更新 `conflict_state` 和 `relation_to_cluster`。
-5. 为 `background_maintenance` 增加真实触发器，再接入 `edge_cluster_merge.md` 做低频 cluster 整理。
-6. 将 access maintenance 扩展到 HyperEdge / EdgeCluster，或明确只以 node activation 作为当前评分依据。
-7. 明确 retired fact 是否需要清理或标记相关 EdgeCluster variants，避免未来 cluster vector recall 命中旧事实描述。
+1. 定义 MemoryNode merge/update/conflict prompt 和 schema。
+2. 定义 summary maintenance 规则：只由 LLM 明确更新，不规则拼接。
+3. 基于 `hyper_edge_description` 向量召回设计 edge maintenance。
+4. 为 EdgeCluster 增加 conflict health / relation_to_cluster 维护。
+5. 明确 retired/invalidated node/edge/cluster 的向量删除策略。
+6. 将 access maintenance 扩展到 HyperEdge / EdgeCluster，或明确只以 node activation 作为评分依据。
+7. 更新或删除旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md` 中仍带旧概念的 prompt。
 
-## 5. 代码位置索引
+## 6. 代码位置索引
 
 - 对外入口：`c_hypermem/memory.py`
 - 写入编排：`c_hypermem/pipeline/ingestion.py`
 - 图组装：`c_hypermem/pipeline/assembly.py`
-- 语义维护：`c_hypermem/pipeline/maintenance.py`
-- 实体解析：`c_hypermem/pipeline/entity_resolution.py`
+- 维护 hook：`c_hypermem/pipeline/maintenance.py`
 - 节点构建：`c_hypermem/pipeline/node_builder.py`
 - 局部图构建：`c_hypermem/pipeline/local_graph_builder.py`
 - 超边构建：`c_hypermem/pipeline/hyperedge_builder.py`
 - 簇构建：`c_hypermem/pipeline/edge_cluster_builder.py`
 - 持久化：`c_hypermem/stores/sqlite_store.py`
 - 向量索引：`c_hypermem/stores/vector_store.py`
+- 向量召回：`c_hypermem/retrieval/vector_recall.py`
 - 时间维护：`c_hypermem/utils/time.py`
 - 维护 prompts：`c_hypermem/prompts/maintenance/`
-- 相关测试：`tests/test_memory.py`
+- 当前同构测试：`tests/test_homogeneous_ingestion.py`

@@ -23,6 +23,7 @@ from c_hypermem.stores.vector_store import (
     VectorIndexItem,
     collect_edge_cluster_canonical_index_items,
     collect_edge_cluster_variant_index_items,
+    collect_hyper_edge_description_index_items,
     collect_node_content_index_items,
     collect_node_local_graph_index_items,
     collect_node_summary_index_items,
@@ -53,10 +54,10 @@ class Memory:
             self.embedding_client = EmbeddingModelClient(config.embedding)
         self.vector_store = vector_store
         if self.vector_store is None and self.embedding_client is not None and config.index.vector == "qdrant":
-            self.vector_store = self._default_qdrant_vector_store("triple")
+            self.vector_store = self._default_qdrant_vector_store("node_local_graph")
         self.vector_stores: dict[str, VectorStore] = {}
         if self.vector_store is not None:
-            self.vector_stores["triple"] = self.vector_store
+            self.vector_stores["node_local_graph"] = self.vector_store
             if vector_store is not None:
                 for item_type in _VECTOR_INDEX_TYPES:
                     self.vector_stores[item_type] = vector_store
@@ -65,6 +66,7 @@ class Memory:
                     {
                         "node_content": self._default_qdrant_vector_store("node_content"),
                         "node_summary": self._default_qdrant_vector_store("node_summary"),
+                        "hyper_edge_description": self._default_qdrant_vector_store("hyper_edge_description"),
                         "edge_cluster_canonical": self._default_qdrant_vector_store("edge_cluster_canonical"),
                         "edge_cluster_variant": self._default_qdrant_vector_store("edge_cluster_variant"),
                         "turn_dialogue": self._default_qdrant_vector_store("turn_dialogue"),
@@ -249,7 +251,7 @@ class Memory:
         self._delete_retired_vectors(output.retired_nodes)
         self.store.upsert_edges(output.edges)
         self.store.upsert_edge_clusters(output.edge_clusters)
-        self._index_nodes_and_clusters(output.nodes, output.edge_clusters)
+        self._index_nodes_edges_and_clusters(output.nodes, output.edges, output.edge_clusters)
         self.store.upsert_edge_cluster_members(output.edge_cluster_members)
         self.store.upsert_entity_aliases(output.entity_aliases)
 
@@ -258,13 +260,14 @@ class Memory:
             return
         local_graph_ids = list(
             dict.fromkeys(
-                make_vector_point_id(node.namespace, "triple", node.node_id)
+                make_vector_point_id(node.namespace, "node_local_graph", node.node_id)
                 for node in nodes
                 if node.local_graph.triples
             )
         )
-        if self.vector_store is not None and local_graph_ids:
-            self.vector_store.delete(local_graph_ids)
+        node_local_graph_store = self.vector_stores.get("node_local_graph") or self.vector_store
+        if node_local_graph_store is not None and local_graph_ids:
+            node_local_graph_store.delete(local_graph_ids)
         ids_by_type: dict[str, list[str]] = {
             "node_content": [
                 make_vector_point_id(node.namespace, "node_content", node.node_id)
@@ -281,7 +284,7 @@ class Memory:
             if store is not None and unique_ids:
                 store.delete(unique_ids)
 
-    def _index_nodes_and_clusters(self, nodes: list[Any], clusters: list[Any]) -> None:
+    def _index_nodes_edges_and_clusters(self, nodes: list[Any], edges: list[Any], clusters: list[Any]) -> None:
         self._index_items(
             "node_content",
             [
@@ -299,11 +302,19 @@ class Memory:
             ],
         )
         self._index_items(
-            "triple",
+            "node_local_graph",
             [
                 item
                 for item in collect_node_local_graph_index_items(nodes)
                 if item.payload.get("node_status") == "active"
+            ],
+        )
+        self._index_items(
+            "hyper_edge_description",
+            [
+                item
+                for item in collect_hyper_edge_description_index_items(edges)
+                if item.payload.get("edge_status") == "active"
             ],
         )
         self._index_items(
@@ -391,9 +402,10 @@ def _with_turn_ids(metadata: dict[str, Any], turn_ids: list[str]) -> dict[str, A
 
 
 _VECTOR_INDEX_TYPES = [
-    "triple",
+    "node_local_graph",
     "node_content",
     "node_summary",
+    "hyper_edge_description",
     "edge_cluster_canonical",
     "edge_cluster_variant",
     "turn_dialogue",
@@ -401,8 +413,6 @@ _VECTOR_INDEX_TYPES = [
 
 
 def _vector_collection_name(base_name: str, item_type: str) -> str:
-    if item_type == "triple":
-        return f"{base_name}_triples"
     return f"{base_name}_{item_type}"
 
 

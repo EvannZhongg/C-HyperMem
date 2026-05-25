@@ -111,26 +111,27 @@ edge_clusters:
 - SQLite 仍是 canonical store；Qdrant 只作为可重建的旁路索引。`Memory.reset(namespace)` 会同步删除该 namespace 在所有向量 collection 中的点。
 - 若未配置 embedding client/model，则不会默认创建向量索引；若配置了 embedding 且 `index.vector=qdrant`，`Memory` 会创建默认 Qdrant vector stores。
 - 不同向量语义类型使用不同 Qdrant collection，避免全部混入同一个向量表：
-  - `c_hypermem_memory_triples`
+  - `c_hypermem_memory_node_local_graph`
   - `c_hypermem_memory_node_content`
   - `c_hypermem_memory_node_summary`
+  - `c_hypermem_memory_hyper_edge_description`
   - `c_hypermem_memory_edge_cluster_canonical`
   - `c_hypermem_memory_edge_cluster_variant`
   - `c_hypermem_memory_turn_dialogue`
-- `triple` collection 当前实际保存的是 **node-local-graph 向量**：每个带 LocalGraph triples 的 `MemoryNode` 只写入 1 个向量点，而不是每条 triple 一个向量点。写入前会把节点核心内容和该节点内部所有 triples 揉成一段完整文本；`node.attributes` 不进入 embedding 文本，避免 `subject/predicate/object` 等已在 triples 中出现的信息重复加权。例如：
+- `node_local_graph` collection 保存 node-local-graph 向量：每个带 LocalGraph triples 的 `MemoryNode` 只写入 1 个向量点，而不是每条 triple 一个向量点。写入前会把节点核心内容和该节点内部所有 triples 揉成一段完整文本；不加入 `Core content`、`Local graph` 等额外语义注释，避免增加噪声。例如：
 
   ```text
-  Core content: Alice prefers morning interviews
-  Local graph:
+  Alice prefers morning interviews
   - Alice prefers morning interviews
   ```
 
   payload 中仍保留 `node_id/triple_ids/triple_count/triples/attributes/node_metadata`。当一个 node 后续新增或更新 triples 时，会用同一个 `node_id` 生成的向量点 ID 覆盖更新该 node 的 local graph 向量；该向量可以被该 node 内每个 triple 通过 payload 中的 `triple_ids` 回指。
 - `node_content` / `node_summary` 向量：索引 `MemoryNode.content` 和 `MemoryNode.summary` 原文，payload 中保留 `node_id/node_labels/status/time/metadata` 等信息。
+- `hyper_edge_description` 向量：索引每条具体 `HyperEdge.description`，payload 中保留 `edge_id/edge_fingerprint/node_ids/member_policy/member_signature/time/metadata` 等信息。
 - `edge_cluster_canonical` 向量：索引 `EdgeCluster.canonical_description`，payload 中保留 `cluster_id/cluster_labels/conflict_state` 等信息。
 - `edge_cluster_variant` 向量：索引 `EdgeCluster.description_variants` 中的各个描述变体，payload 中保留 `cluster_id/variant_index/source_edge_id` 等信息。`BasicEdgeClusterBuilder` 复用已有 cluster 时会追加新的 description variant，并重新持久化 cluster。
 - `turn_dialogue` 向量：只索引同一个 `turn_id` 下 role 为 `user` 和 `assistant` 的消息，按轮次拼接为完整对话日志，且 payload 中必须带 `turn_id`、`turn_index` 和 `dialogue_roles`。后续检索命中该向量时，应拿 `turn_id` 回 SQLite `turns` 表提取完整对话，而不是依赖向量库中的文本作为权威上下文。
-- 当节点退役时，会删除该节点对应的 node-local-graph、node_content 和 node_summary 向量点，避免非 active 节点继续被向量召回。其中 node-local-graph 向量删除显式调用主 `triple` collection 对应的 vector store。
+- 当节点退役时，会删除该节点对应的 node-local-graph、node_content 和 node_summary 向量点，避免非 active 节点继续被向量召回。其中 node-local-graph 向量删除显式调用 `node_local_graph` collection 对应的 vector store。
 
 ## 7. 检索现状
 
@@ -146,7 +147,7 @@ Memory.search(query, namespace)
      -> DenseVectorRecall.embed_query(query)
      -> DenseVectorRecall.recall(...)
         - node_content top 20
-        - node_local_graph top 20，代码中仍对应 triple vector store
+        - node_local_graph top 20
         - node_summary top 10
      -> SQLiteFTSRecall.recall(...)
         - SQLite FTS top 30
@@ -329,8 +330,9 @@ SearchResult 当前结构要点：
 - SQLite `turns` 表保存交互历史，并为节点/边写入 `source_turn_ids`。
 - 默认向量后端配置为 Qdrant。
 - node-local-graph 向量索引按 node 聚合写入：一个 node 的 `content/triples` 拼成一段文本，只写入 1 个向量点，payload 中保留该 node 下所有 `triple_ids`。当前不再对散碎 triple 逐条 embedding。
-- 写入侧统一通过 `Memory._index_nodes_and_clusters(...)` 为 node-local-graph、node content、node summary、EdgeCluster canonical description 和 EdgeCluster variants 建索引。
+- 写入侧统一通过 `Memory._index_nodes_edges_and_clusters(...)` 为 node-local-graph、node content、node summary、HyperEdge description、EdgeCluster canonical description 和 EdgeCluster variants 建索引。
 - `MemoryNode.content` 和 `MemoryNode.summary` 分别写入独立向量 collection。
+- `HyperEdge.description` 写入独立向量 collection。
 - `EdgeCluster.canonical_description` 和 `description_variants` 分别写入独立向量 collection。
 - 复用已有 EdgeCluster 时会追加 description variant，并参与后续向量写入。
 - `turn_dialogue` 向量按 `turn_id` 轮次拼接 user / assistant 消息，跳过 observation / tool 日志，并在 payload 中保存 `turn_id`。

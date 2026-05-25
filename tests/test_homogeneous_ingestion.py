@@ -4,6 +4,7 @@ from c_hypermem import Memory
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
 from c_hypermem.pipeline.node_builder import NodeBuilder
+from c_hypermem.stores.vector_store import make_vector_point_id, node_local_graph_embedding_text
 from c_hypermem.schema import ExtractedNode, MemoryExtraction
 
 
@@ -122,6 +123,57 @@ def test_entity_label_nodes_reuse_existing_alias_entry(tmp_path):
     assert nodes[0].time.activation.updated_turn == 1
 
 
+def test_vector_indexing_uses_node_local_graph_and_hyper_edge_description(tmp_path):
+    embedding_client = RecordingEmbeddingClient()
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=StaticHomogeneousExtractor(),
+        embedding_client=embedding_client,
+        vector_store=vector_store,
+    )
+    namespace = "homogeneous_vector_ns"
+    memory.reset(namespace)
+
+    memory.add_memory(
+        user_input="Alice prefers morning interviews.",
+        assistant_output="I will remember that.",
+        namespace=namespace,
+    )
+    nodes = memory.store.list_nodes(namespace)
+    edges = memory.store.list_edges(namespace)
+    memory.close()
+
+    item_types = [record.payload["item_type"] for record in vector_store.records]
+    assert item_types.count("node_local_graph") == 3
+    assert item_types.count("hyper_edge_description") == 2
+
+    preference = next(node for node in nodes if "preference" in node.node_labels)
+    preference_graph_text = node_local_graph_embedding_text(preference)
+    assert preference_graph_text == (
+        "Alice prefers morning interviews.\n"
+        "- Alice prefers morning interviews"
+    )
+    assert "Core content:" not in preference_graph_text
+    assert "Local graph:" not in preference_graph_text
+
+    graph_record = next(
+        record
+        for record in vector_store.records
+        if record.payload["item_type"] == "node_local_graph"
+        and record.payload["node_id"] == preference.node_id
+    )
+    assert graph_record.id == make_vector_point_id(namespace, "node_local_graph", preference.node_id)
+    assert graph_record.text == preference_graph_text
+
+    edge_descriptions = {edge.description for edge in edges}
+    edge_records = [
+        record for record in vector_store.records if record.payload["item_type"] == "hyper_edge_description"
+    ]
+    assert {record.text for record in edge_records} == edge_descriptions
+    assert {record.payload["edge_id"] for record in edge_records} == {edge.edge_id for edge in edges}
+
+
 class StaticHomogeneousExtractor:
     def extract(self, window, context):
         return MemoryExtraction.model_validate(
@@ -176,3 +228,35 @@ class SequenceHomogeneousExtractor:
         payload = self.payloads[self.index]
         self.index += 1
         return MemoryExtraction.model_validate(payload)
+
+
+class RecordingEmbeddingClient:
+    def __init__(self):
+        self.inputs = []
+
+    def embed(self, texts):
+        self.inputs.append(list(texts))
+        return [[float(index + 1)] for index, _ in enumerate(texts)]
+
+
+class RecordingVectorStore:
+    def __init__(self):
+        self.records = []
+        self.deleted_namespaces = []
+        self.deleted_ids = []
+        self.closed = False
+
+    def upsert(self, records):
+        self.records.extend(records)
+
+    def search(self, *, query, vector, top_k, filters=None):
+        return []
+
+    def delete(self, ids):
+        self.deleted_ids.extend(ids)
+
+    def delete_namespace(self, namespace):
+        self.deleted_namespaces.append(namespace)
+
+    def close(self):
+        self.closed = True

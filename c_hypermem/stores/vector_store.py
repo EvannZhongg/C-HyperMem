@@ -6,7 +6,7 @@ from typing import Any, Protocol, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
 from c_hypermem.errors import ConfigError, StoreError
-from c_hypermem.schema import EdgeCluster, LocalTriple, MemoryNode, Message
+from c_hypermem.schema import EdgeCluster, HyperEdge, LocalTriple, MemoryNode, Message
 
 
 _QDRANT_CLIENTS: dict[Path, Any] = {}
@@ -260,15 +260,13 @@ def node_local_graph_embedding_text(node: MemoryNode) -> str:
     lines: list[str] = []
     content = node.content.strip()
     if content:
-        lines.append(f"Core content: {content}")
+        lines.append(content)
 
     triples = [triple for triple in node.local_graph.triples if triple.triple_id is not None]
-    if triples:
-        lines.append("Local graph:")
-        for triple in triples:
-            text = triple_embedding_text(triple)
-            if text:
-                lines.append(f"- {text}")
+    for triple in triples:
+        text = triple_embedding_text(triple)
+        if text:
+            lines.append(f"- {text}")
 
     return "\n".join(lines).strip()
 
@@ -318,7 +316,7 @@ def collect_node_local_graph_index_items(nodes: Sequence[MemoryNode]) -> list[No
         }
         items.append(
             NodeLocalGraphIndexItem(
-                id=make_vector_point_id(node.namespace, "triple", node.node_id),
+                id=make_vector_point_id(node.namespace, "node_local_graph", node.node_id),
                 text=text,
                 payload={key: value for key, value in payload.items() if value is not None},
             )
@@ -347,6 +345,18 @@ def collect_node_summary_index_items(nodes: Sequence[MemoryNode]) -> list[Vector
         )
         for node in nodes
         if node.summary.strip()
+    ]
+
+
+def collect_hyper_edge_description_index_items(edges: Sequence[HyperEdge]) -> list[VectorIndexItem]:
+    return [
+        VectorIndexItem(
+            id=make_vector_point_id(edge.namespace, "hyper_edge_description", edge.edge_id),
+            text=edge.description,
+            payload=_hyper_edge_payload(edge, "hyper_edge_description"),
+        )
+        for edge in edges
+        if edge.description.strip()
     ]
 
 
@@ -434,7 +444,7 @@ def turn_dialogue_embedding_text(messages: Sequence[Message]) -> str:
 def make_vector_point_id(namespace: str, item_type: str, item_id: str | None = None) -> str:
     if item_id is None:
         item_id = item_type
-        item_type = "triple"
+        item_type = "node_local_graph"
     return str(uuid5(NAMESPACE_URL, f"c-hypermem:{namespace}:{item_type}:{item_id}"))
 
 
@@ -455,6 +465,24 @@ def _node_payload(node: MemoryNode, item_type: str) -> dict[str, Any]:
         "attributes": node.attributes,
         "node_time": node.time.model_dump(mode="json"),
         "node_metadata": node.metadata,
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _hyper_edge_payload(edge: HyperEdge, item_type: str) -> dict[str, Any]:
+    payload = {
+        "namespace": edge.namespace,
+        "item_type": item_type,
+        "edge_id": edge.edge_id,
+        "edge_fingerprint": edge.edge_fingerprint,
+        "edge_status": edge.status,
+        "description": edge.description,
+        "node_ids": edge.node_ids,
+        "member_policy": edge.member_policy,
+        "member_signature": edge.member_signature,
+        "member_version": edge.member_version,
+        "edge_time": edge.time.model_dump(mode="json"),
+        "edge_metadata": edge.metadata,
     }
     return {key: value for key, value in payload.items() if value is not None}
 

@@ -2,7 +2,13 @@
 
 本文档只记录当前关于 C-HyperMem memory 结构的概念构思。这里的“高阶关联 / HyperEdge”是系统内部数据结构，不要求 LLM 直接生成。
 
-暂不在本文档展开检索流程、代码组织、评测接入和长期维护策略；这些内容放在 `development_architecture.md` 中。
+暂不在本文档展开检索算法、代码组织、评测接入和具体实现状态：
+
+- 检索设计概念与 pipeline 放在 `retrieval_design.md`。
+- 代码组织、模块边界和开发路线放在 `development_architecture.md`。
+- 当前真实实现状态、配置字段、测试覆盖放在 `current_implementation.md`。
+
+本文只讲记忆结构和写入侧构建概念。
 
 ## 1. 核心想法
 

@@ -1,6 +1,6 @@
 # C-HyperMem Retrieval Design
 
-本文档记录当前开发阶段的检索流程。它替换旧的检索设计草案，只描述已经决定进入当前实现的路径。
+本文档记录 C-HyperMem 检索算法的设计概念和 pipeline 边界。具体代码模块、真实配置、测试覆盖和当前实现进度放在 `current_implementation.md` 中维护；本文只保留检索设计应遵守的结构。
 
 当前约束：
 
@@ -11,55 +11,35 @@
 - 不做兜底召回策略。
 - 当前仍是开发环境，不考虑旧数据迁移或兼容。
 
-## 配置
+## 参数边界
 
-```yaml
-retrieval:
-  query_analysis: false
-  lexical_top_k: 30
-  node_content_vector_top_k: 20
-  node_local_graph_vector_top_k: 20
-  node_summary_vector_top_k: 10
-  graph_seed_top_k: 80
-  edge_coherence_alpha: 0.5
-  edge_coherence_beta: 2.0
-  final_top_k: 10
-```
+检索参数应围绕以下边界组织，具体字段名和默认值以 `current_implementation.md` 与配置文件为准：
 
-字段含义：
+- query analysis 模式。
+- lexical recall 候选数。
+- node content / node summary / node local graph 向量召回候选数。
+- RRF 后进入图谱涟漪扩散的 seed 数。
+- HyperEdge coherence 的 `alpha` / `beta` 权重。
+- 最终返回的 HyperEdge 数量。
 
-- `query_analysis`: 当前固定为 `false`，表示检索不做 LLM 或 spaCy query analysis。
-- `lexical_top_k`: SQLite FTS 召回的 MemoryNode 数量。
-- `node_content_vector_top_k`: `node_content` vector collection 召回数量。
-- `node_local_graph_vector_top_k`: `node_local_graph` vector collection 召回数量。代码中对应现有 `triple` vector store。
-- `node_summary_vector_top_k`: `node_summary` vector collection 召回数量。
-- `graph_seed_top_k`: RRF 融合后进入图谱涟漪扩散的初始候选数量，当前为 80。
-- `edge_coherence_alpha`: HyperEdge 相干性加分的基础权重。
-- `edge_coherence_beta`: HyperEdge 相干性加分的非线性放大指数。
-- `final_top_k`: 图谱涟漪扩散后的最终 HyperEdge 数量，当前为 10。每条返回的 edge 内包含其成员 nodes。
-
-## 当前流程
+## 检索 Pipeline
 
 ```text
 Memory.search(query, namespace)
-  -> Retriever.search(...)
-     -> QueryAnalyzer.analyze(query)
-        - query_analysis=false 时返回原始 query metadata
-     -> DenseVectorRecall.embed_query(query)
-     -> DenseVectorRecall.recall(...)
-        - node_content top 20
-        - node_local_graph top 20
-        - node_summary top 10
-     -> SQLiteFTSRecall.recall(...)
-        - SQLite FTS top 30
-     -> reciprocal_rank_fusion(...)
-     -> GraphRippleExpansion.expand(...)
-        - take RRF top 80 as graph seeds
-        - seed node -> incident HyperEdge -> all member nodes
-        - incident edge -> EdgeCluster -> description_variants and sibling edge nodes
-        - apply edge_coherence when one HyperEdge has 2+ seed hits
-     -> final top 10 HyperEdge
-     -> SearchResult per edge, with edge_nodes
+  -> query analysis
+  -> parallel recall
+     -> lexical node recall
+     -> node_content vector recall
+     -> node_summary vector recall
+     -> node_local_graph vector recall
+  -> node-level fusion
+     -> Reciprocal Rank Fusion
+  -> graph ripple expansion
+     -> seed node -> incident HyperEdge -> all edge member nodes
+     -> incident HyperEdge -> EdgeCluster -> sibling edges and description variants
+     -> HyperEdge coherence scoring
+  -> edge-level ranking
+  -> final top-k HyperEdges, each carrying member nodes
 ```
 
 ## 向量召回
@@ -70,25 +50,19 @@ Memory.search(query, namespace)
 - `node_summary`
 - `node_local_graph`
 
-现有代码中 `node_local_graph` 复用历史命名的 `triple` vector store，但 payload 的 `item_type` 为 `node_local_graph`。
-
 每个向量命中必须通过 payload 中的 `node_id` 回到 SQLite canonical store 读取 `MemoryNode`。向量索引只作为可重建旁路索引，不作为权威数据源。
 
-## SQLite FTS 召回
+## Lexical 召回
 
-用户 query 同时送入 SQLite FTS：
+用户 query 同时进入词法召回通道。第一阶段可使用 SQLite FTS；后续也可以替换为 BM25 或其他开发者自定义算法。
 
-- FTS 表：`nodes_fts`
-- 索引字段：`content`、`summary`、`local_graph`
-- namespace 与 node_id 作为非全文索引字段保存，用于过滤和回表。
-
-词法召回通过 `SQLiteFTSRecall` 封装。后续如果开发者要替换成 BM25 或其他词法算法，应替换这个模块，而不是把算法写进 `Retriever`。
+词法召回应作为独立算法模块，不应把 FTS / BM25 细节写死在检索编排器里。
 
 ## 融合策略
 
 当前使用 Reciprocal Rank Fusion。
 
-常数 `k` 写死为 60，并封装在 `retrieval/fusion.py` 中，后续可替换该模块。
+RRF 常数不需要暴露为用户配置；实现上应封装在融合模块中，方便后续替换融合策略。
 
 ```text
 score(node) =
@@ -162,22 +136,17 @@ S_edge = max(S_node for node in edge_nodes)
 
 其中 `S_node` 已经包含 RRF 分数和可能存在的 `edge_coherence` 分数。这样 `final_top_k` 选择的是最相关的故事线/关系边，再把这些边内的节点整体返回。
 
-## SearchResult Metadata
+## 结果边界
 
-当前结果 metadata 包含：
+最终返回单位是 HyperEdge，而不是单个 MemoryNode。每条结果应包含：
 
-- `channels`: `lexical`、`vector`、`graph`
-- `score_parts`: edge-level score parts，包括 `edge_member_max`、`edge_member_avg`、`edge_coherence`
-- `edge_nodes`: edge 内包含的 MemoryNode；每个 node 带自己的 `score_parts`、`channels`、`matched_vector_items`、`triples`
-- `hyper_edge_ids`
-- `edge_id`
-- `edge_type`
-- `edge_relation`
-- `cluster_ids`
-- `cluster_description_variants`
-- `time`
-- `edge_metadata`
-- `query_analysis`
+- edge identity、relation、description、roles。
+- edge-level score 与可解释 score parts。
+- edge 内成员 nodes。
+- 每个 node 的内容、分数来源和 triples。
+- 如果 edge 属于 EdgeCluster，附带 cluster id 和 description variants。
+
+具体 JSON metadata 字段以 `current_implementation.md` 为准。
 
 ## 当前不做
 

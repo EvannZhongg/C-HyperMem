@@ -139,13 +139,84 @@ edge_clusters:
 
 ## 7. 检索现状
 
-检索代码暂时保持轻量实现：
+当前检索链路已重构为 edge-centered retrieval。入口仍是 `Memory.search(query, namespace, top_k)`，但返回的每条 `SearchResult` 代表一个最终 HyperEdge，而不是单个 MemoryNode。
 
-- `Retriever` 使用 `LexicalScorer` 做 BM25-like 召回。
-- `EdgeExpansion` 负责基于 incident HyperEdge 的简单拓扑扩展，`Retriever` 只保留召回、打分和结果编排。
-- 可根据 `preference/task/entity/time` 等信号做少量结构化加分。
+当前流程：
 
-检索侧尚未按设计文档完整重构，后续需要补充向量召回、EdgeCluster 扩展、query analysis LLM、冲突感知排序等。
+```text
+Memory.search(query, namespace)
+  -> Retriever.search(...)
+     -> QueryAnalyzer.analyze(query)
+        - 当前默认 retrieval.query_analysis=false，只保留原始 query metadata
+     -> DenseVectorRecall.embed_query(query)
+     -> DenseVectorRecall.recall(...)
+        - node_content top 20
+        - node_local_graph top 20，代码中仍对应 triple vector store
+        - node_summary top 10
+     -> SQLiteFTSRecall.recall(...)
+        - SQLite FTS top 30
+     -> reciprocal_rank_fusion(...)
+     -> GraphRippleExpansion.expand(...)
+        - RRF top 80 作为图谱种子
+        - seed node -> incident HyperEdge -> edge 内 active nodes
+        - incident HyperEdge -> EdgeCluster -> description_variants 和 sibling edge nodes
+        - 同一 HyperEdge 内 2+ seed hits 时计算 edge_coherence
+     -> final top 10 HyperEdge
+     -> SearchResult(edge, edge_nodes)
+```
+
+已实现模块：
+
+- `retrieval/lexical_recall.py`：封装 SQLite FTS 词法召回。当前 FTS 表为 `nodes_fts`，索引 `content/summary/local_graph`，namespace 和 node_id 作为非全文索引字段保存。
+- `retrieval/vector_recall.py`：封装三路 node 向量召回。每个向量命中必须通过 payload 的 `node_id` 回 SQLite canonical store 读取 active `MemoryNode`。
+- `retrieval/fusion.py`：封装 Reciprocal Rank Fusion。RRF 常数当前写死为 `60`，不进入配置。
+- `retrieval/graph_ripple.py`：封装图谱层涟漪扩散和 edge-centered ranking。
+- `stores/vector_store.py`：`VectorStore` 已增加 `search(...)` 协议，`QdrantVectorStore.search(...)` 使用 `query_points`。
+- `stores/sqlite_store.py`：新增 `nodes_fts` 和 `search_nodes_fts(...)`；新增 `get_edges(...)` 以支持 EdgeCluster sibling edges 回表。
+
+当前检索配置：
+
+```yaml
+retrieval:
+  query_analysis: false
+  lexical_top_k: 30
+  node_content_vector_top_k: 20
+  node_local_graph_vector_top_k: 20
+  node_summary_vector_top_k: 10
+  graph_seed_top_k: 80
+  edge_coherence_alpha: 0.5
+  edge_coherence_beta: 2.0
+  final_top_k: 10
+```
+
+`final_top_k` 表示最终返回的 HyperEdge 数量，不是 MemoryNode 数量。每条 edge 结果在 `metadata.edge_nodes` 中携带该 edge 内包含的 node；每个 node 都稳定包含 `triples` 字段，哪怕为空列表。
+
+相干性加分公式：
+
+```text
+S_coherence(E) =
+  alpha * max(0, N_hit - 1) ** beta * S_base_avg
+```
+
+其中 `N_hit` 是 RRF 初始候选池中属于同一 HyperEdge 的 seed node 数量。`N_hit <= 1` 时不加分；`N_hit >= 2` 时把分数写入 edge-level `score_parts.edge_coherence`，同时 edge 内成员 node 的 `score_parts.edge_coherence` 也会记录该结构化加分。
+
+SearchResult 当前结构要点：
+
+- `id`：`edge_id`。
+- `content`：edge description 加 edge 内 node 内容。
+- `score`：edge-level score，当前取 edge 内成员 node 的最高分。
+- `metadata.edge_nodes`：该 edge 内的 nodes，每个 node 带 `node_id/content/summary/score/channels/score_parts/matched_vector_items/triples/time/node_metadata`。
+- `metadata.cluster_description_variants`：如果 edge 属于 EdgeCluster，会带出 cluster 的 description variants。
+
+当前仍不接入：
+
+- LLM query analysis。
+- spaCy query analysis。
+- entity alias recall。
+- turn dialogue recall。
+- temporal filter。
+- recency decay / access boost。
+- LLM rerank。
 
 ## 8. 与开发架构文档的实现关系
 
@@ -165,9 +236,8 @@ edge_clusters:
 
 - 维护 prompt 已存在；`contradiction_check` 已接入主流程，但 `fact_merge/edge_merge/edge_conflict_check/edge_cluster_merge` 的 LLM 调用链尚未接入。
 - `turn/state/task/instruction/tool` 已作为标签配置存在，但尚未都有专门构建策略；当前主要依靠 LLM 输出 labels 和统一节点结构承载。
-- 向量索引配置和 embedding client 已有，但检索主流程仍以 lexical recall 为主，尚未启用完整向量召回链路。
-- node-local-graph/node/edge_cluster/turn_dialogue 向量写入已接入 Qdrant，但检索主流程仍未使用向量召回；当前只完成写入侧索引建设。
-- EdgeCluster 已按 topic fingerprint 查库复用并追加新边；复用已有 cluster 时会追加 description variant；尚未实现相似 cluster 召回、LLM cluster merge、后台宏观整理和复杂冲突状态维护。
+- 检索主流程已接入 node_content、node_summary、node-local-graph 三路向量召回，但尚未接入 EdgeCluster canonical / variant 向量召回，也未接入 turn_dialogue 向量召回。
+- EdgeCluster 已按 topic fingerprint 查库复用并追加新边；检索侧已能在命中 edge 所属 cluster 时带出 `description_variants` 和 sibling edge nodes，但尚未实现相似 cluster 向量召回、LLM cluster merge、后台宏观整理和复杂冲突状态维护。
 - LocalNodeGraph 当前只覆盖 event participants、entity attributes 和 assertion SPO；还没有从事件内部关系、工具调用、任务状态中构建更丰富的局部图。
 
 ## 9. 设计仍不明确时的轻量替代方案
@@ -206,8 +276,8 @@ edge_clusters:
 
 - **检索增强**
   设计方向：lexical + vector + hyperedge + edge cluster + temporal + rerank。
-  当前方案：写入侧已为 node-local-graph、node content、node summary、EdgeCluster canonical description、EdgeCluster description variants、turn dialogue 分别建立独立 Qdrant collection；检索侧仍为 lexical recall + 简单 HyperEdge expansion + 少量结构化加分，尚未接入向量召回。
-  原因：先建立可重建的向量索引层和 payload 结构，再逐步接入 node-local-graph/node/hyperedge/cluster 的混合召回策略，避免一开始就把召回质量问题和写入结构问题混在一起。
+  当前方案：检索侧已接入 SQLite FTS + node_content/node_summary/node-local-graph 三路向量召回，通过 RRF 融合，再做 HyperEdge / EdgeCluster 涟漪扩散，最终返回 top K 条 HyperEdge 及其成员 nodes。EdgeCluster canonical / variant 向量召回、turn_dialogue 召回、entity alias recall、temporal filter 和 LLM rerank 暂未接入。
+  原因：先完成 query_analysis=false 下的可解释混合召回和 edge-centered 返回，再逐步增加更多召回通道，避免把 query analysis、rerank 和多跳召回同时引入。
 
 - **事件驱动增量抽取**
   设计方向：每次只抽取最新 target，同时提供最近上下文辅助理解。
@@ -243,11 +313,11 @@ edge_clusters:
 - **EdgeCluster 不是 HyperEdge merge 的前置条件**  
   当前实现允许先创建具体 HyperEdge，再用 cluster 轻量聚合。后续相似边召回、cluster merge 都应维持“不强制合并具体边”的原则。
 
-- **检索扩展属于 `EdgeExpansion`**
-  `Retriever` 不再内联图拓扑扩展逻辑，而是委托 `retrieval.expansion.EdgeExpansion`。后续加入 multi-hop 或 EdgeCluster expansion 时，应扩展 `EdgeExpansion` 或新增 expansion 组件，不要让 `Retriever` 重新膨胀。
+- **检索扩展属于独立 retrieval 组件**
+  `Retriever` 只负责编排，不直接写具体召回算法。当前拆分为 `SQLiteFTSRecall`、`DenseVectorRecall`、`reciprocal_rank_fusion` 和 `GraphRippleExpansion`。旧的 `EdgeExpansion` 仍保留为历史简单拓扑扩展模块，但当前主检索链路不再使用它。
 
 - **不同语义向量使用独立 collection**
-  当前已索引 node-local-graph、节点 content、节点 summary、EdgeCluster canonical description、EdgeCluster description variants 和 turn dialogue，但每类向量使用独立 Qdrant collection。后续接入检索侧向量召回时，也应保持不同语义类型可分别召回、分别限流、分别解释，不应把所有向量混入同一个 collection 增加检索压力。
+  当前已索引 node-local-graph、节点 content、节点 summary、EdgeCluster canonical description、EdgeCluster description variants 和 turn dialogue，但每类向量使用独立 Qdrant collection。检索侧已接入 node-local-graph、node_content、node_summary 三路向量召回，并保持分别限流、分别解释；后续新增 EdgeCluster 或 turn_dialogue 召回时也应保持该隔离方式。
 
 - **`default_policy` 只作为内部 fallback，不暴露为 prompt label**  
   这避免 LLM 抽取出 `default_policy` 这种实现名标签。后续扩展 node label prompt 时应保持该行为。
@@ -279,7 +349,12 @@ edge_clusters:
 - LLM contradiction check 驱动的冲突 fact 退役与 correction edge。
 - `loves/travels_to` 等多值语义由维护 LLM 判为 compatible 时不会被错误退役。
 - EdgeCluster 按 topic fingerprint 复用，多个相关 state edge 会追加到同一 cluster。
-- Retriever 委托 `EdgeExpansion` 做 HyperEdge 拓扑扩展。
+- SQLite FTS 召回通过 `nodes_fts` 检索 `content/summary/local_graph`。
+- node_content、node_summary、node-local-graph 三路向量召回接入检索主流程。
+- RRF 融合 lexical 和 vector 初始结果。
+- GraphRippleExpansion 根据 RRF 种子扩散到 HyperEdge 成员、EdgeCluster description variants 和 sibling edge nodes。
+- `edge_coherence` 在同一 HyperEdge 出现多个 seed hits 时产生非线性结构化加分。
+- `Memory.search()` 返回 top K 条 HyperEdge，每条 edge 的 `metadata.edge_nodes` 携带成员 nodes 和各 node 的 triples。
 
 常用验证命令：
 

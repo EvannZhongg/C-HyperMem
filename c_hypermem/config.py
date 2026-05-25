@@ -106,7 +106,7 @@ class NodeLabelConfig(BaseModel):
 class NodeLabelsConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    default_policy: NodeLabelConfig = Field(default_factory=NodeLabelConfig)
+    unconfigured_label_policy: NodeLabelConfig = Field(default_factory=NodeLabelConfig)
 
     def model_post_init(self, __context: Any) -> None:
         extra = self.__pydantic_extra__ or {}

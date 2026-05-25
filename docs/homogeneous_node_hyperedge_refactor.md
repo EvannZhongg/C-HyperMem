@@ -311,13 +311,13 @@ hyperedges:
 
 ## 4. 重构顺序
 
-不再使用 M1/M2。建议按下面顺序推进，每一步结束都应更新 `docs/current_implementation.md`。
+建议按下面顺序推进，每一步结束都应更新 `docs/current_implementation.md`。
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要文件 |
 | --- | --- | --- | --- | --- |
 | 0 | 设计文档对齐 | 已开始 | 明确同构节点、description-only edge、可选 inferred metadata。 | `docs/hypergraph_memory_architecture.md`, 本文档 |
-| 1 | Schema 引入新结构 | 未开始 | 增加 `ExtractedNode/ExtractedEdgeSummary`，删除旧抽取 schema 主路径。 | `schema.py` |
-| 2 | 抽取 prompt 与 parser 重构 | 未开始 | LLM 输出 `nodes/edge_summaries`，禁止输出来源字段。 | `memory_extraction.md`, `extraction.py` |
+| 1 | Schema 引入新结构 | 已完成 | 增加 `ExtractedNode/ExtractedEdgeSummary`，删除旧抽取 schema 主路径。 | `schema.py` |
+| 2 | 抽取 prompt 与 parser 重构 | 已完成 | LLM 输出 `nodes/edge_summaries`，禁止输出来源字段。 | `memory_extraction.md`, `extraction.py` |
 | 3 | NodeBuilder 与 LocalGraphBuilder 重构 | 未开始 | 统一 `build_node`，删除按 label 写死 triples 的主路径。 | `node_builder.py`, `local_graph_builder.py` |
 | 4 | GraphAssembler 重构 | 未开始 | 按 refs 组装 nodes 和 HyperEdges，并从 context.turn_ids 写入系统来源 metadata。 | `assembly.py`, `node_builder.py`, `hyperedge_builder.py` |
 | 5 | 存储与索引调整 | 未开始 | 新写入不依赖 polarity/roles；来源回溯依赖系统注入的 `source_turn_ids`。 | `sqlite_store.py`, `vector_store.py` |
@@ -352,8 +352,10 @@ hyperedges:
 
 - 已完成：`docs/hypergraph_memory_architecture.md` 已调整为同构节点、`nodes/edge_summaries`、description-only HyperEdge、系统绑定 `source_turn_ids`、可选 inferred metadata 的设计方向。
 - 已完成：本文档新增，列出重构顺序和影响模块。
-- 未开始：代码 schema 重构。
-- 未开始：抽取 prompt 和 parser 重构。
+- 已完成：代码 schema 重构，`MemoryExtraction` 主入口已切换为 `nodes/edge_summaries/metadata`，schema 层拒绝旧抽取 shape 与 LLM 来源/typed-edge 字段。
+- 已完成：抽取 prompt 和 parser 重构，`memory_extraction.md` 只要求 `nodes/edge_summaries`，`normalize_extraction_payload()` 不再接受或映射 `entities/events/assertions/sources`。
+- 已删除：`ExtractedSource`。
+- 暂时遗留待后续阶段删除：`ExtractedEntity`、`ExtractedEvent`、`EventParticipant`、`ExtractedAssertion`。这些类已不在抽取主路径中，但仍被旧 `assembly/node_builder/local_graph_builder/entity_resolution/maintenance` 引用；阶段 3-6 迁移到 `ExtractedNode` 后应立即删除。
 - 未开始：写入、维护、存储、检索适配。
 
-下一步建议从 **阶段 1：Schema 引入新结构** 开始。Schema 不稳定时先不要改 assembly，否则会反复返工。
+下一步建议进入 **阶段 3：NodeBuilder 与 LocalGraphBuilder 重构**，让主写入路径开始消费 `ExtractedNode`。

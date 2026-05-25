@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 NodeLabel = str
 MemoryStatus = Literal["active", "retired", "invalidated", "uncertain"]
 ConflictState = Literal["none", "contains_conflict", "needs_review"]
 MemberPolicy = Literal["immutable", "appendable", "versioned"]
-Polarity = Literal["positive", "negative", "neutral", "unknown"]
+
+
+_EXTRA_FORBID = ConfigDict(extra="forbid")
 
 
 class ValidTime(BaseModel):
@@ -62,14 +64,15 @@ class LocalTriple(BaseModel):
 
 class LocalNodeGraph(BaseModel):
     triples: list[LocalTriple] = Field(default_factory=list)
-    attributes: dict[str, Any] = Field(default_factory=dict)
-    roles: dict[str, str] = Field(default_factory=dict)
 
 
-class ExtractedSource(BaseModel):
-    text: str = ""
-    ref: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+class ExtractedTriple(BaseModel):
+    model_config = _EXTRA_FORBID
+
+    subject: str
+    predicate: str
+    object: str
+    qualifiers: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExtractedEntity(BaseModel):
@@ -102,18 +105,85 @@ class ExtractedAssertion(BaseModel):
     predicate: str
     object: str
     source_ref: str | None = None
-    polarity: Polarity = "positive"
     time: str | None = None
     labels: list[str] = Field(default_factory=list)
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
-class MemoryExtraction(BaseModel):
-    entities: list[ExtractedEntity] = Field(default_factory=list)
-    events: list[ExtractedEvent] = Field(default_factory=list)
-    assertions: list[ExtractedAssertion] = Field(default_factory=list)
-    sources: list[ExtractedSource] = Field(default_factory=list)
+class ExtractedNode(BaseModel):
+    model_config = _EXTRA_FORBID
+
+    ref: str
+    labels: list[str] = Field(default_factory=list)
+    canonical_text: str
+    summaries: list[str] = Field(default_factory=list)
+    triples: list[ExtractedTriple] = Field(default_factory=list)
+    edge_summary_refs: list[str] = Field(default_factory=list)
+    time: str | dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_extracted_node(self) -> "ExtractedNode":
+        self.ref = self.ref.strip()
+        self.canonical_text = self.canonical_text.strip()
+        self.labels = _unique_non_empty_strings(self.labels)
+        self.summaries = _unique_non_empty_strings(self.summaries)
+        self.edge_summary_refs = _unique_non_empty_strings(self.edge_summary_refs)
+        if not self.ref:
+            raise ValueError("ExtractedNode.ref is required.")
+        if not self.canonical_text:
+            raise ValueError("ExtractedNode.canonical_text is required.")
+        return self
+
+
+class ExtractedEdgeSummary(BaseModel):
+    model_config = _EXTRA_FORBID
+
+    ref: str
+    description: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_edge_summary(self) -> "ExtractedEdgeSummary":
+        self.ref = self.ref.strip()
+        self.description = self.description.strip()
+        if not self.ref:
+            raise ValueError("ExtractedEdgeSummary.ref is required.")
+        if not self.description:
+            raise ValueError("ExtractedEdgeSummary.description is required.")
+        return self
+
+
+class MemoryExtraction(BaseModel):
+    model_config = _EXTRA_FORBID
+
+    nodes: list[ExtractedNode] = Field(default_factory=list)
+    edge_summaries: list[ExtractedEdgeSummary] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_extraction_refs(self) -> "MemoryExtraction":
+        node_refs = [node.ref for node in self.nodes]
+        edge_refs = [edge.ref for edge in self.edge_summaries]
+        duplicate_node_refs = _duplicates(node_refs)
+        duplicate_edge_refs = _duplicates(edge_refs)
+        if duplicate_node_refs:
+            raise ValueError(f"Duplicate ExtractedNode refs: {', '.join(duplicate_node_refs)}")
+        if duplicate_edge_refs:
+            raise ValueError(f"Duplicate ExtractedEdgeSummary refs: {', '.join(duplicate_edge_refs)}")
+
+        edge_ref_set = set(edge_refs)
+        missing_refs = sorted(
+            {
+                edge_ref
+                for node in self.nodes
+                for edge_ref in node.edge_summary_refs
+                if edge_ref not in edge_ref_set
+            }
+        )
+        if missing_refs:
+            raise ValueError(f"Unknown edge_summary_refs: {', '.join(missing_refs)}")
+        return self
 
 
 class MemoryNode(BaseModel):
@@ -143,13 +213,11 @@ class HyperEdge(BaseModel):
     edge_type: str
     relation: str
     description: str = ""
-    polarity: Polarity = "unknown"
     status: MemoryStatus = "active"
     member_policy: MemberPolicy = "immutable"
     member_signature: str = ""
     member_version: int = 1
     node_ids: list[str]
-    roles: dict[str, str] = Field(default_factory=dict)
     weights: dict[str, float] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     time: TimeBundle = Field(default_factory=TimeBundle)
@@ -270,3 +338,17 @@ class SearchResult(BaseModel):
     content: str
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def _unique_non_empty_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _duplicates(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates

@@ -69,58 +69,48 @@ class LLMMemoryExtractor:
 
 
 def normalize_extraction_payload(payload: dict[str, Any]) -> MemoryExtraction:
+    if not isinstance(payload, dict):
+        raise ValueError("Extraction payload must be a JSON object.")
     data = dict(payload or {})
-    data["entities"] = [_normalize_entity(item) for item in _list(data.get("entities"))]
-    data["events"] = [_normalize_event(item) for item in _list(data.get("events"))]
-    data["assertions"] = [_normalize_assertion(item) for item in _list(data.get("assertions"))]
-    data["sources"] = [_normalize_source(item) for item in _list(data.get("sources"))]
+    missing_keys = [key for key in ("nodes", "edge_summaries") if key not in data]
+    if missing_keys:
+        raise ValueError(f"Extraction payload missing required keys: {', '.join(missing_keys)}")
+    data["nodes"] = [_normalize_node(item) for item in _array(data.get("nodes"), "nodes")]
+    data["edge_summaries"] = [
+        _normalize_edge_summary(item) for item in _array(data.get("edge_summaries"), "edge_summaries")
+    ]
     return MemoryExtraction.model_validate(data)
 
 
-def _normalize_entity(value: Any) -> dict[str, Any]:
-    data = _as_dict(value, text_key="name")
-    data["name"] = str(data.get("name") or data.get("text") or data.get("summary") or "").strip()
-    data["labels"] = _strings(data.get("labels"))
-    data["aliases"] = _strings(data.get("aliases"))
-    if "type" not in data and "entity_type" in data:
-        data["type"] = data["entity_type"]
+def _normalize_node(value: Any) -> dict[str, Any]:
+    data = _mapping(value, "nodes[]")
+    for key in ("ref", "canonical_text"):
+        if key in data:
+            data[key] = str(data[key]).strip()
+    if "labels" in data:
+        data["labels"] = _strings(data["labels"], "nodes[].labels")
+    if "summaries" in data:
+        data["summaries"] = _strings(data["summaries"], "nodes[].summaries")
+    if "edge_summary_refs" in data:
+        data["edge_summary_refs"] = _strings(data["edge_summary_refs"], "nodes[].edge_summary_refs")
+    if "triples" in data:
+        data["triples"] = [_normalize_triple(item) for item in _array(data["triples"], "nodes[].triples")]
     return data
 
 
-def _normalize_event(value: Any) -> dict[str, Any]:
-    data = _as_dict(value, text_key="summary")
-    data["summary"] = str(data.get("summary") or data.get("text") or "").strip()
-    data["participants"] = [_normalize_participant(item) for item in _list(data.get("participants"))]
-    data["labels"] = _strings(data.get("labels"))
+def _normalize_triple(value: Any) -> dict[str, Any]:
+    data = _mapping(value, "nodes[].triples[]")
+    for key in ("subject", "predicate", "object"):
+        if key in data:
+            data[key] = str(data[key]).strip()
     return data
 
 
-def _normalize_participant(value: Any) -> dict[str, Any]:
-    data = _as_dict(value, text_key="name")
-    data["name"] = str(data.get("name") or data.get("text") or "").strip()
-    return data
-
-
-def _normalize_assertion(value: Any) -> dict[str, Any]:
-    data = _as_dict(value, text_key="object")
-    if "object" not in data and "value" in data:
-        data["object"] = data["value"]
-    if "subject" not in data:
-        data["subject"] = ""
-    if "predicate" not in data:
-        data["predicate"] = "related_to"
-    data["subject"] = str(data.get("subject") or "").strip()
-    data["predicate"] = str(data.get("predicate") or "").strip()
-    data["object"] = str(data.get("object") or "").strip()
-    data["labels"] = _strings(data.get("labels"))
-    return data
-
-
-def _normalize_source(value: Any) -> dict[str, Any]:
-    data = _as_dict(value, text_key="text")
-    data["text"] = str(data.get("text") or data.get("content") or "").strip()
-    if "ref" not in data and "source_ref" in data:
-        data["ref"] = data["source_ref"]
+def _normalize_edge_summary(value: Any) -> dict[str, Any]:
+    data = _mapping(value, "edge_summaries[]")
+    for key in ("ref", "description"):
+        if key in data:
+            data[key] = str(data[key]).strip()
     return data
 
 
@@ -131,8 +121,8 @@ def _render_node_labels(config: MemoryConfig) -> str:
             continue
         description = policy.description or "No description provided."
         rows.append(f"- {label}: {description}")
-    if config.node_labels.default_policy.description:
-        rows.append(f"- Other precise labels are allowed: {config.node_labels.default_policy.description}")
+    if config.node_labels.unconfigured_label_policy.description:
+        rows.append(f"- Unconfigured labels: {config.node_labels.unconfigured_label_policy.description}")
     return "\n".join(rows) or "No configured labels."
 
 
@@ -161,10 +151,11 @@ def _render_prompt_template(
 
 def _strict_json_shape() -> str:
     return (
-        'Return one JSON object with keys "entities", "events", "assertions", and "sources". '
-        "Use assertions as the single carrier for facts, attributes, and triples. "
+        'Return one JSON object with keys "nodes", "edge_summaries", and optional "metadata". '
+        "Each node must have ref, labels, canonical_text, summaries, triples, edge_summary_refs, optional time, and optional metadata. "
+        "Each edge summary must have ref, description, and optional metadata. "
         "Use Context only to resolve references and extract memories only from Target. "
-        "Do not output node_id, edge_id, entity_id, triple_id, confidence, salience, weight, or graph structure."
+        "Do not output sources, source_ref, source_refs, node_id, edge_id, entity_id, triple_id, edge_type, relation, roles, polarity, confidence, salience, weight, or graph structure."
     )
 
 
@@ -189,19 +180,17 @@ def _compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _as_dict(value: Any, *, text_key: str) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    return {text_key: str(value)}
+def _mapping(value: Any, location: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{location} must be an object.")
+    return dict(value)
 
 
-def _list(value: Any) -> list[Any]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
+def _array(value: Any, location: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueError(f"{location} must be an array.")
+    return value
 
 
-def _strings(value: Any) -> list[str]:
-    return [str(item).strip() for item in _list(value) if str(item).strip()]
+def _strings(value: Any, location: str) -> list[str]:
+    return [str(item).strip() for item in _array(value, location) if str(item).strip()]

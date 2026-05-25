@@ -5,8 +5,8 @@ turn:
   indexing: {lexical: true, vector: true, time_index: true}
 
 node_labels:
-  default_policy:
-    description: "System fallback for labels that are not listed below. The model may emit a precise semantic label when a reusable memory object does not fit the configured labels."
+  unconfigured_label_policy:
+    description: "The configured labels are preferences, not a closed whitelist. If a reusable memory object does not fit them, emit a concise semantic label that names what the memory is."
     local_graph: {enabled: true, allow_triples: true, allow_attributes: true, allow_roles: true}
     indexing: {lexical: true, vector: true}
   entity:

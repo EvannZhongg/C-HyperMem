@@ -22,19 +22,23 @@
 - `index.vector` 默认改为 `qdrant`；`index.vector_store` 提供本地 Qdrant 路径和 collection 名称，默认无需用户额外配置服务端。
 - 当前默认节点标签包括：`event/fact/entity/state/preference/task/instruction/tool`。
 - `turn` 不是 `MemoryNode` 标签；它是独立的原始对话记录配置，写入 `turns` 表和 `turn_dialogue` 向量索引，不需要 `LocalNodeGraph`。
-- `default_policy` 是系统内部 fallback 策略；传入 prompt 时不会以 `default_policy` 名称暴露给 LLM。
+- `node_labels.unconfigured_label_policy` 是未配置标签的处理规则；传入 prompt 时只以规则文本出现，不作为可抽取 label 名称暴露给 LLM。
 
 ## 3. 当前 Schema
 
 核心 schema 位于 `c_hypermem/schema.py`：
 
 - `MemoryNode`：统一节点结构，使用 `node_labels` 表达语义类型。
-- `HyperEdge`：具体高阶关系实例，成员通过 `hyper_edge_members` 表保存。
+- `HyperEdge`：具体高阶关系实例，核心字段已收敛到 description、member node ids、metadata、time/status/member policy 等；`polarity/roles` 已不再是 Pydantic schema 核心字段。
 - `EdgeCluster`：相关 HyperEdge 的聚合工作集，不强制合并边。
-- `LocalNodeGraph`：所有节点共享的局部图结构，包含 triples、attributes、roles。
-- `MemoryExtraction`：LLM 一次抽取输出，只包含 `entities/events/assertions/sources`。
+- `LocalNodeGraph`：所有节点共享的局部图结构，只包含统一 triples；旧 `attributes/roles` 已从 schema 移除。
+- `ExtractedNode`：新的抽取节点候选，包含 `ref/labels/canonical_text/summaries/triples/edge_summary_refs/time/metadata`。
+- `ExtractedEdgeSummary`：新的抽取边摘要候选，包含 `ref/description/metadata`。
+- `MemoryExtraction`：LLM 一次抽取输出主入口已切换为 `nodes/edge_summaries/metadata`；旧 `entities/events/assertions/sources` 不再是主抽取 schema 字段。
 
-系统 ID 由 `utils/ids.py` 生成，LLM 不生成 `node_id/edge_id/triple_id`。
+Schema 层当前会拒绝旧抽取 shape，以及 LLM 输出的 `sources/source_refs/source_ref/edge_type/relation/polarity/roles` 等不应由模型生成的来源或 typed-edge 字段。系统 ID 由 `utils/ids.py` 生成，LLM 不生成 `node_id/edge_id/triple_id`。
+
+注意：当前已完成阶段 1-2。写入 builder、assembly、存储和检索仍处在旧实现迁移前状态，后续阶段会逐步改为消费 `nodes/edge_summaries`。
 
 ## 4. 写入 Pipeline
 
@@ -57,7 +61,7 @@ Memory.add_memory/add
   - `target` 是当前最新消息或交互片段，LLM 只能从 target 中抽取新增记忆。
   - `add_memory(...)` 每次把当前 interaction 作为 target；`add(messages)` 会按消息顺序逐条模拟增量 target。
 - `node_labels.yaml` 的启用标签描述会注入抽取 prompt 的 `{{NODE_LABELS}}`。
-- 抽取输出归一化为 `MemoryExtraction`。
+- 抽取 prompt 已切换为 `nodes/edge_summaries`。`pipeline/extraction.py` 的 `normalize_extraction_payload()` 只接受该新结构，并严格拒绝旧 `entities/events/assertions/sources` 与模型输出来源字段。
 - `assertions` 是当前构建事实节点的主输入：每条 assertion 会转为 `fact` 节点、LocalNodeGraph triple、property index 和基础超边成员。
 - 原始交互消息不写入 `nodes`；`Memory` 会先写入独立 `turns` 表，再把当前 `turn_id` 放入 `metadata.turn_ids`，GraphAssembler 组装出的节点和边会在 metadata 中带上 `source_turn_ids`。
 - `add_memory(...)` 中同一次交互的 user / assistant 消息共享同一个 `turn_id`；`turns` 表仍按消息行保存，但写入侧会额外把该 `turn_id` 下的 User Prompt 与 Assistant Output 拼成一段完整对话日志，写入独立的 `turn_dialogue` 向量索引。Observation / tool 日志不进入该 turn dialogue 向量。
@@ -320,13 +324,15 @@ SearchResult 当前结构要点：
 - **不同语义向量使用独立 collection**
   当前已索引 node-local-graph、节点 content、节点 summary、EdgeCluster canonical description、EdgeCluster description variants 和 turn dialogue，但每类向量使用独立 Qdrant collection。检索侧已接入 node-local-graph、node_content、node_summary 三路向量召回，并保持分别限流、分别解释；后续新增 EdgeCluster 或 turn_dialogue 召回时也应保持该隔离方式。
 
-- **`default_policy` 只作为内部 fallback，不暴露为 prompt label**  
-  这避免 LLM 抽取出 `default_policy` 这种实现名标签。后续扩展 node label prompt 时应保持该行为。
+- **`unconfigured_label_policy` 只作为规则，不暴露为 prompt label**  
+  这避免 LLM 抽取出 `default_policy` 或 `unconfigured_label_policy` 这类实现名标签。后续扩展 node label prompt 时应保持该行为。
 
 ## 11. 验证
 
 当前测试覆盖：
 
+- 阶段 1 schema 重构：`MemoryExtraction` 可解析 `nodes/edge_summaries`；拒绝旧 `entities/events/assertions/sources`；拒绝 LLM 输出来源字段和 typed-edge 字段；`HyperEdge` schema 不再暴露 `polarity/roles`。
+- 阶段 2 抽取重构：`memory_extraction.md` 输出 shape 改为 `nodes/edge_summaries`；parser 不再做旧抽取 shape 映射；字段数组和对象 shape 类型错误会直接失败。
 - 默认配置和 split config 加载。
 - `.env` 模型变量解析。
 - embedding `batch_size` 配置和分批调用。
@@ -344,7 +350,7 @@ SearchResult 当前结构要点：
 - 统一节点 schema 和 SQLite 表结构。
 - 显式 extractor 到系统组装链路。
 - 默认节点标签集合。
-- `default_policy` 不作为 prompt label 渲染。
+- `unconfigured_label_policy` 不作为 prompt label 渲染，只以未配置标签规则传入。
 - 抽取 prompt 注入 `node_labels.yaml`。
 - 维护 prompt registry 加载。
 - LLM contradiction check 驱动的冲突 fact 退役与 correction edge。

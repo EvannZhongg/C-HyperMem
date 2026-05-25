@@ -1509,7 +1509,7 @@ node_identity:
     hint_sources: [aliases, local_graph, source_scope, metadata]
 
 node_labels:
-  default_policy:
+  unconfigured_label_policy:
     description: "Fallback behavior for labels not explicitly configured. Allow unknown labels when the text clearly contains a reusable memory object that does not fit existing labels."
     local_graph: {enabled: true, allow_triples: true, allow_attributes: true, allow_roles: true}
     indexing: {lexical: true, vector: true}

@@ -173,6 +173,9 @@ class RetrievalConfig(BaseModel):
     node_content_vector_top_k: int = 20
     node_local_graph_vector_top_k: int = 20
     node_summary_vector_top_k: int = 10
+    graph_seed_top_k: int = 80
+    edge_coherence_alpha: float = 0.5
+    edge_coherence_beta: float = 2.0
     final_top_k: int = 10
 
 

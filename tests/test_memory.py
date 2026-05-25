@@ -84,6 +84,7 @@ def test_add_uses_explicit_extractor_only(tmp_path):
     assert results
     assert "Alice prefers morning interviews" in results[0]["content"]
     assert "lexical" in results[0]["metadata"]["channels"]
+    assert any("Alice prefers morning interviews" in node["content"] for node in results[0]["metadata"]["edge_nodes"])
     assert all(node.metadata.get("source_turn_ids") == ["turn:0"] for node in nodes)
     assert all(edge.metadata.get("source_turn_ids") == ["turn:0"] for edge in edges)
 
@@ -164,6 +165,9 @@ def test_default_config_includes_split_config_files():
     assert config.retrieval.node_content_vector_top_k == 20
     assert config.retrieval.node_local_graph_vector_top_k == 20
     assert config.retrieval.node_summary_vector_top_k == 10
+    assert config.retrieval.graph_seed_top_k == 80
+    assert config.retrieval.edge_coherence_alpha == 0.5
+    assert config.retrieval.edge_coherence_beta == 2.0
     assert config.retrieval.final_top_k == 10
     assert config.local_graph.configured_by_node_labels
     assert config.node_labels.labels["event"].indexing.time_index
@@ -778,7 +782,84 @@ def test_retriever_uses_sqlite_fts_recall(tmp_path):
 
     assert results
     assert "lexical" in results[0]["metadata"]["channels"]
-    assert "rrf_lexical" in results[0]["metadata"]["score_parts"]
+    assert any("rrf_lexical" in node["score_parts"] for node in results[0]["metadata"]["edge_nodes"])
+    assert all("triples" in node for node in results[0]["metadata"]["edge_nodes"])
+    assert any(
+        triple["subject"] == "Alice" and triple["predicate"] == "prefers"
+        for node in results[0]["metadata"]["edge_nodes"]
+        for triple in node["triples"]
+    )
+
+
+def test_graph_ripple_adds_edge_coherence_for_multi_hit_edges(tmp_path):
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "retrieval": {
+                "edge_coherence_alpha": 0.5,
+                "edge_coherence_beta": 2.0,
+            },
+        },
+        extractor=StaticExtractor(),
+    )
+    namespace = "edge_coherence_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice prefers morning interviews.", namespace=namespace)
+    results = memory.search("Alice", namespace=namespace, top_k=5)
+    memory.close()
+
+    coherent = [result for result in results if "edge_coherence" in result["metadata"]["score_parts"]]
+    assert coherent
+    assert coherent[0]["metadata"]["score_parts"]["edge_coherence"] > 0
+    assert coherent[0]["metadata"]["hyper_edge_ids"]
+    assert "graph" in coherent[0]["metadata"]["channels"]
+    assert coherent[0]["metadata"]["edge_nodes"]
+
+
+def test_graph_ripple_carries_edge_cluster_description_variants(tmp_path):
+    extractor = SequenceExtractor(
+        [
+            {
+                "entities": [{"name": "Alice"}],
+                "assertions": [{"subject": "Alice", "predicate": "loves", "object": "tea"}],
+            },
+            {
+                "entities": [{"name": "Alice"}],
+                "assertions": [{"subject": "Alice", "predicate": "loves", "object": "coffee"}],
+            },
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=extractor,
+        maintenance_llm=MaintenanceLLM(
+            [
+                {
+                    "conflict_state": "compatible",
+                    "affected_existing_refs": [],
+                    "recommended_old_status": "active",
+                    "valid_time_update": {},
+                    "rationale": "A person can love both tea and coffee.",
+                }
+            ]
+        ),
+    )
+    namespace = "cluster_ripple_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice loves tea.", namespace=namespace)
+    memory.add_memory("Alice loves coffee.", namespace=namespace)
+    results = memory.search("Alice loves tea", namespace=namespace, top_k=10)
+    memory.close()
+
+    variant_texts = {
+        variant["text"]
+        for result in results
+        for variant in result["metadata"]["cluster_description_variants"]
+    }
+    assert {"Alice loves tea", "Alice loves coffee"} <= variant_texts
+    assert any(result["metadata"]["cluster_ids"] for result in results)
 
 
 def test_query_analysis_false_embeds_query_and_uses_vector_recall(tmp_path):
@@ -816,9 +897,10 @@ def test_query_analysis_false_embeds_query_and_uses_vector_recall(tmp_path):
     assert vector_store.search_calls
     assert vector_store.search_calls[0]["vector"] == [0.0, 1.0]
     assert [call["top_k"] for call in vector_store.search_calls] == [20, 20, 10]
-    assert results[0]["id"] == hit_record.payload["node_id"]
+    assert results[0]["id"] in results[0]["metadata"]["hyper_edge_ids"]
+    assert hit_record.payload["node_id"] in results[0]["metadata"]["edge_node_ids"]
     assert "vector" in results[0]["metadata"]["channels"]
-    assert results[0]["metadata"]["score_parts"]["rrf_vector"] == 1 / 61
+    assert any(node["score_parts"].get("rrf_vector") == 1 / 61 for node in results[0]["metadata"]["edge_nodes"])
     assert results[0]["metadata"]["query_analysis"]["mode"] == "false"
 
 

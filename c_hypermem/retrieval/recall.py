@@ -3,8 +3,8 @@ from __future__ import annotations
 from c_hypermem.config import NLPConfig, RetrievalConfig
 from c_hypermem.embeddings import EmbeddingClient
 from c_hypermem.llms.base import LLMClient
-from c_hypermem.retrieval.context import compose_result_content
 from c_hypermem.retrieval.fusion import FusedNode, reciprocal_rank_fusion
+from c_hypermem.retrieval.graph_ripple import GraphRippleExpansion, RankedEdge
 from c_hypermem.retrieval.lexical_recall import SQLiteFTSRecall
 from c_hypermem.retrieval.query_analysis import build_query_analyzer
 from c_hypermem.retrieval.vector_recall import DenseVectorRecall
@@ -34,6 +34,7 @@ class Retriever:
             embedding_client=embedding_client,
             vector_stores=vector_stores,
         )
+        self.graph_ripple = GraphRippleExpansion(store, config)
 
     def search(
         self,
@@ -79,30 +80,59 @@ class Retriever:
             vector_nodes=ranked_vector_nodes,
             vector_hit_payloads=vector_hits_by_node,
         )
+        ranked_edges = self.graph_ripple.expand(namespace=namespace, initial=fused)
 
         limit = min(top_k, self.config.final_top_k)
-        return [self._to_result(item, analysis_metadata=analysis.to_metadata()) for item in fused[:limit]]
+        return [self._to_result(item, analysis_metadata=analysis.to_metadata()) for item in ranked_edges[:limit]]
 
-    def _to_result(self, fused: FusedNode, *, analysis_metadata: dict) -> SearchResult:
-        node = fused.node
+    def _to_result(self, ranked_edge: RankedEdge, *, analysis_metadata: dict) -> SearchResult:
+        edge = ranked_edge.edge
         metadata = {
-            "node_labels": node.node_labels,
-            "node_id": node.node_id,
             "query_analysis": analysis_metadata,
+            "edge_id": edge.edge_id,
+            "hyper_edge_ids": [edge.edge_id],
+            "edge_type": edge.edge_type,
+            "edge_relation": edge.relation,
+            "edge_description": edge.description,
+            "edge_roles": edge.roles,
+            "edge_node_ids": edge.node_ids,
+            "channels": sorted({channel for node in ranked_edge.nodes for channel in node.channels}),
+            "hit_node_ids": sorted(ranked_edge.hit_node_ids),
+            "cluster_ids": sorted(ranked_edge.cluster_ids),
+            "cluster_description_variants": ranked_edge.cluster_description_variants,
+            "score_parts": ranked_edge.score_parts,
+            "time": edge.time.model_dump(mode="json"),
+            "edge_metadata": edge.metadata,
+            "edge_nodes": [self._node_metadata(item) for item in ranked_edge.nodes],
+        }
+        return SearchResult(
+            id=edge.edge_id,
+            content=self._edge_content(ranked_edge),
+            score=float(ranked_edge.score),
+            metadata=metadata,
+        )
+
+    def _node_metadata(self, fused: FusedNode) -> dict[str, object]:
+        node = fused.node
+        payload: dict[str, object] = {
+            "node_id": node.node_id,
+            "node_labels": node.node_labels,
+            "content": node.content,
+            "summary": node.summary,
+            "score": fused.score,
+            "channels": sorted(fused.channels),
+            "score_parts": fused.score_parts,
+            "matched_vector_items": fused.vector_hits,
             "source_session_id": node.metadata.get("source_session_id"),
             "source_event_id": node.metadata.get("source_event_id"),
             "source_turn_ids": node.metadata.get("source_turn_ids", []),
-            "channels": sorted(fused.channels),
-            "matched_vector_items": fused.vector_hits,
-            "score_parts": fused.score_parts,
             "time": node.time.model_dump(mode="json"),
             "node_metadata": node.metadata,
+            "triples": [triple.model_dump(mode="json") for triple in node.local_graph.triples],
         }
-        if node.local_graph.triples:
-            metadata["triples"] = [triple.model_dump(mode="json") for triple in node.local_graph.triples[:5]]
-        return SearchResult(
-            id=node.node_id,
-            content=compose_result_content(node, []),
-            score=float(fused.score),
-            metadata=metadata,
-        )
+        return payload
+
+    def _edge_content(self, ranked_edge: RankedEdge) -> str:
+        edge = ranked_edge.edge
+        node_lines = "\n".join(f"- {item.node.content}" for item in ranked_edge.nodes)
+        return f"[{edge.edge_type}] {edge.description}\nNodes:\n{node_lines}"

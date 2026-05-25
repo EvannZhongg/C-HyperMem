@@ -507,6 +507,20 @@ class SQLiteStore:
         ).fetchall()
         return [_edge_from_row(row, _edge_members(self.conn, row["namespace"], row["edge_id"])) for row in rows]
 
+    def get_edges(self, namespace: str, edge_ids: list[str]) -> list[HyperEdge]:
+        if not edge_ids:
+            return []
+        placeholders = ",".join("?" for _ in edge_ids)
+        rows = self.conn.execute(
+            f"SELECT * FROM hyper_edges WHERE namespace = ? AND edge_id IN ({placeholders})",
+            [namespace, *edge_ids],
+        ).fetchall()
+        by_id = {}
+        for row in rows:
+            edge = _edge_from_row(row, _edge_members(self.conn, row["namespace"], row["edge_id"]))
+            by_id[edge.edge_id] = edge
+        return [by_id[edge_id] for edge_id in edge_ids if edge_id in by_id]
+
     def list_edge_clusters(self, namespace: str) -> list[EdgeCluster]:
         rows = self.conn.execute(
             "SELECT * FROM edge_clusters WHERE namespace = ? ORDER BY rowid",

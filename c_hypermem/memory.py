@@ -191,7 +191,13 @@ class Memory:
     ) -> list[dict[str, Any]]:
         current_turn = self._turn_counters.get(namespace)
         results = self.retriever.search(query, namespace=namespace, top_k=top_k, current_turn=current_turn)
-        self._record_access(namespace, [result.id for result in results], current_turn)
+        accessed_node_ids = [
+            str(node.get("node_id"))
+            for result in results
+            for node in result.metadata.get("edge_nodes", [])
+            if isinstance(node, dict) and node.get("node_id")
+        ]
+        self._record_access(namespace, list(dict.fromkeys(accessed_node_ids)), current_turn)
         return [result.model_dump(mode="json") for result in results]
 
     def stats(self, namespace: str = "default") -> dict[str, Any]:

@@ -19,6 +19,7 @@ from c_hypermem.schema import (
 )
 from c_hypermem.utils.ids import make_member_signature, make_triple_id
 from c_hypermem.utils.time import utc_now_iso
+from c_hypermem.utils.text import tokenize
 
 
 class SQLiteStore:
@@ -583,6 +584,9 @@ class SQLiteStore:
     def search_nodes_fts(self, namespace: str, query: str, top_k: int) -> list[tuple[MemoryNode, float]]:
         if top_k <= 0 or not query.strip():
             return []
+        fts_query = _safe_fts_query(query)
+        if not fts_query:
+            return []
         try:
             rows = self.conn.execute(
                 """
@@ -596,7 +600,7 @@ class SQLiteStore:
                 ORDER BY lexical_rank
                 LIMIT ?
                 """,
-                (query, namespace, top_k),
+                (fts_query, namespace, top_k),
             ).fetchall()
         except sqlite3.Error as exc:
             raise StoreError(f"SQLite FTS node search failed for query {query!r}.") from exc
@@ -944,6 +948,11 @@ def _local_graph_fts_text(node: MemoryNode) -> str:
         f"{triple.subject} {triple.predicate} {triple.object}"
         for triple in node.local_graph.triples
     )
+
+
+def _safe_fts_query(query: str) -> str:
+    terms = list(dict.fromkeys(tokenize(query)))
+    return " OR ".join(f'"{term}"' for term in terms)
 
 
 def _message_from_turn_row(row: sqlite3.Row) -> Message:

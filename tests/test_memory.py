@@ -791,6 +791,22 @@ def test_retriever_uses_sqlite_fts_recall(tmp_path):
     )
 
 
+def test_retriever_handles_question_punctuation_in_sqlite_fts(tmp_path):
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=StaticExtractor(),
+    )
+    namespace = "sqlite_fts_punctuation_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice prefers morning interviews.", namespace=namespace)
+    results = memory.search("What does Alice prefer?", namespace=namespace, top_k=5)
+    memory.close()
+
+    assert results
+    assert "Alice" in results[0]["content"]
+
+
 def test_graph_ripple_adds_edge_coherence_for_multi_hit_edges(tmp_path):
     memory = Memory.from_config(
         {

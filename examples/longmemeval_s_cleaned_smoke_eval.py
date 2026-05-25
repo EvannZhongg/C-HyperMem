@@ -36,6 +36,11 @@ def main() -> None:
     parser.add_argument("--max-sessions", type=int, default=None, help="Limit sessions per sample.")
     parser.add_argument("--max-pairs", type=int, default=None, help="Limit user/assistant pairs per session.")
     parser.add_argument("--reuse-existing", action="store_true", help="Skip ingestion and only run queries.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue an interrupted run by skipping pairs already recorded in SQLite turns.",
+    )
     parser.add_argument("--no-reset", action="store_true", help="Do not clear namespaces before ingestion.")
     parser.add_argument(
         "--disable-vector",
@@ -86,7 +91,8 @@ def main() -> None:
                 max_sessions=args.max_sessions,
                 max_pairs=args.max_pairs,
                 reuse_existing=args.reuse_existing,
-                reset=not args.no_reset,
+                resume=args.resume,
+                reset=not args.no_reset and not args.resume,
                 log_every=max(1, args.log_every),
                 logger=logger,
             )
@@ -119,6 +125,7 @@ def _run_sample(
     max_sessions: int | None,
     max_pairs: int | None,
     reuse_existing: bool,
+    resume: bool,
     reset: bool,
     log_every: int,
     logger: logging.Logger,
@@ -141,11 +148,15 @@ def _run_sample(
     )
 
     ingested_pairs = 0
+    skipped_pairs = 0
+    completed_pair_keys = _completed_pair_keys(memory, namespace) if resume and not reuse_existing else set()
     ingest_started = time.perf_counter()
     if not reuse_existing:
         if reset:
             logger.info("[%s] reset namespace", question_id)
             memory.reset(namespace)
+        elif resume:
+            logger.info("[%s] resume namespace with %s completed pair keys", question_id, len(completed_pair_keys))
 
         for session_index, session in enumerate(sessions, start=1):
             pairs = _conversation_pairs(session["messages"], max_pairs=max_pairs)
@@ -159,6 +170,19 @@ def _run_sample(
                 len(pairs),
             )
             for pair_index, pair in enumerate(pairs, start=1):
+                pair_key = (session["session_id"], pair_index - 1)
+                if pair_key in completed_pair_keys:
+                    skipped_pairs += 1
+                    if skipped_pairs % log_every == 0 or skipped_pairs == len(completed_pair_keys):
+                        logger.info(
+                            "[%s] skip completed pair session=%s pair=%s/%s skipped=%s",
+                            question_id,
+                            session_index,
+                            pair_index,
+                            len(pairs),
+                            skipped_pairs,
+                        )
+                    continue
                 pair_started = time.perf_counter()
                 memory.add_memory(
                     user_input=pair.get("user"),
@@ -222,7 +246,9 @@ def _run_sample(
         "session_count": len(sessions),
         "planned_pairs": total_pairs,
         "ingested_pairs": ingested_pairs,
+        "skipped_pairs": skipped_pairs,
         "reuse_existing": reuse_existing,
+        "resume": resume,
         "ingest_elapsed_sec": round(time.perf_counter() - ingest_started, 3),
         "stats": stats_after_ingest,
         "top_results": top_results,
@@ -302,6 +328,32 @@ def _result_summary(rank: int, result: dict[str, Any]) -> dict[str, Any]:
         "edge_nodes": metadata.get("edge_nodes", []),
         "score_parts": metadata.get("score_parts", {}),
     }
+
+
+def _completed_pair_keys(memory: Memory, namespace: str) -> set[tuple[str, int]]:
+    rows = memory.store.conn.execute(
+        """
+        SELECT DISTINCT turn_metadata_json
+        FROM turns
+        WHERE namespace = ?
+        """,
+        (namespace,),
+    ).fetchall()
+    keys: set[tuple[str, int]] = set()
+    for row in rows:
+        try:
+            metadata = json.loads(row["turn_metadata_json"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        session_id = metadata.get("source_session_id")
+        pair_index = metadata.get("source_pair_index")
+        if session_id is None or pair_index is None:
+            continue
+        try:
+            keys.add((str(session_id), int(pair_index)))
+        except (TypeError, ValueError):
+            continue
+    return keys
 
 
 def _contains_text(results: list[dict[str, Any]], needle: str) -> bool:

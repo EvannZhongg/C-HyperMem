@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from c_hypermem.config import ModelConfig
@@ -29,10 +30,36 @@ class OpenAICompatibleLLM:
         return self._client
 
     def generate_json(self, prompt: str) -> dict[str, Any]:
-        response = self.client.chat.completions.create(
-            model=self.config.model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
+        response = _with_retries(
+            lambda: self.client.chat.completions.create(
+                model=self.config.model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            ),
+            config=self.config,
         )
         content = response.choices[0].message.content or "{}"
         return json.loads(content)
+
+
+def _with_retries(call, *, config: ModelConfig) -> Any:
+    attempts = max(1, config.retry_attempts)
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts or not _is_retryable_openai_error(exc):
+                raise
+            delay = min(config.retry_backoff_max_sec, config.retry_backoff_base_sec ** attempt)
+            time.sleep(max(0.0, delay))
+    raise last_error  # type: ignore[misc]
+
+
+def _is_retryable_openai_error(exc: Exception) -> bool:
+    try:
+        from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+    except ImportError:
+        return False
+    return isinstance(exc, (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError))

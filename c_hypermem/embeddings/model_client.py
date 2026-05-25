@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from c_hypermem.config import ModelConfig
@@ -36,6 +37,32 @@ class EmbeddingModelClient:
         batch_size = max(1, self.config.batch_size)
         for start in range(0, len(texts), batch_size):
             batch = texts[start : start + batch_size]
-            response = self.client.embeddings.create(model=self.config.model, input=batch)
+            response = _with_retries(
+                lambda: self.client.embeddings.create(model=self.config.model, input=batch),
+                config=self.config,
+            )
             embeddings.extend(item.embedding for item in response.data)
         return embeddings
+
+
+def _with_retries(call, *, config: ModelConfig) -> Any:
+    attempts = max(1, config.retry_attempts)
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts or not _is_retryable_openai_error(exc):
+                raise
+            delay = min(config.retry_backoff_max_sec, config.retry_backoff_base_sec ** attempt)
+            time.sleep(max(0.0, delay))
+    raise last_error  # type: ignore[misc]
+
+
+def _is_retryable_openai_error(exc: Exception) -> bool:
+    try:
+        from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+    except ImportError:
+        return False
+    return isinstance(exc, (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError))

@@ -133,12 +133,14 @@ def test_default_config_includes_split_config_files():
     assert config.llm.model == os.getenv("CHYPERMEM_LLM_MODEL", "${CHYPERMEM_LLM_MODEL}")
     assert config.llm.base_url == os.getenv("CHYPERMEM_LLM_BASE_URL", "${CHYPERMEM_LLM_BASE_URL}")
     assert config.llm.api_key == os.getenv("CHYPERMEM_LLM_API_KEY", "${CHYPERMEM_LLM_API_KEY}")
+    assert config.llm.retry_attempts == 5
     assert config.embedding is not None
     assert config.embedding.provider == "openai_compatible"
     assert config.embedding.model == os.getenv("CHYPERMEM_EMBEDDING_MODEL", "${CHYPERMEM_EMBEDDING_MODEL}")
     assert config.embedding.base_url == os.getenv("CHYPERMEM_EMBEDDING_BASE_URL", "${CHYPERMEM_EMBEDDING_BASE_URL}")
     assert config.embedding.api_key == os.getenv("CHYPERMEM_EMBEDDING_API_KEY", "${CHYPERMEM_EMBEDDING_API_KEY}")
     assert config.embedding.batch_size == 10
+    assert config.embedding.retry_attempts == 5
     assert default_raw["include"] == ["models.yaml", "node_labels.yaml"]
     assert default_raw["ingestion"]["context_window_messages"] == 3
     assert "incremental_build" not in default_raw["ingestion"]

@@ -26,6 +26,9 @@ class ModelConfig(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     batch_size: int = 10
+    retry_attempts: int = 3
+    retry_backoff_base_sec: float = 2.0
+    retry_backoff_max_sec: float = 60.0
 
 
 class NLPConfig(BaseModel):

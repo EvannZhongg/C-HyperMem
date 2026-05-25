@@ -72,7 +72,6 @@ class BasicEdgeClusterBuilder:
                     namespace=context.namespace,
                     cluster_id=cluster.cluster_id,
                     edge_id=edge_id,
-                    relation_to_cluster="shared_node",
                 )
         members = list(members_by_key.values())
         return list(changed_clusters_by_id.values()), members
@@ -83,7 +82,6 @@ class BasicEdgeClusterBuilder:
             namespace=context.namespace,
             cluster_id=cluster.cluster_id,
             edge_id=edge.edge_id,
-            relation_to_cluster="shared_node",
         )
         return cluster, member
 

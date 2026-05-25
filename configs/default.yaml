@@ -89,7 +89,6 @@ retrieval:
   lexical_top_k: 30
   node_content_vector_top_k: 20
   node_local_graph_vector_top_k: 20
-  node_summary_vector_top_k: 10
   graph_seed_top_k: 80
   edge_coherence_alpha: 0.5
   edge_coherence_beta: 2.0

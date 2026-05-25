@@ -273,11 +273,10 @@ class SQLiteStore:
                 self.conn.execute(
                     """
                     INSERT INTO edge_cluster_members (
-                        namespace, cluster_id, edge_id, relation_to_cluster, status, metadata_json
+                        namespace, cluster_id, edge_id, status, metadata_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(namespace, cluster_id, edge_id) DO UPDATE SET
-                        relation_to_cluster = excluded.relation_to_cluster,
                         status = excluded.status,
                         metadata_json = excluded.metadata_json
                     """,
@@ -285,7 +284,6 @@ class SQLiteStore:
                         member.namespace,
                         member.cluster_id,
                         member.edge_id,
-                        member.relation_to_cluster,
                         member.status,
                         _to_json(member.metadata),
                     ),
@@ -708,7 +706,6 @@ class SQLiteStore:
                         namespace TEXT NOT NULL,
                         cluster_id TEXT NOT NULL,
                         edge_id TEXT NOT NULL,
-                        relation_to_cluster TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'active',
                         metadata_json TEXT NOT NULL,
                         PRIMARY KEY (namespace, cluster_id, edge_id)
@@ -852,7 +849,6 @@ def _cluster_member_from_row(row: sqlite3.Row) -> EdgeClusterMember:
         namespace=row["namespace"],
         cluster_id=row["cluster_id"],
         edge_id=row["edge_id"],
-        relation_to_cluster=row["relation_to_cluster"],
         status=row["status"],
         metadata=_from_json(row["metadata_json"], {}),
     )

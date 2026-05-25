@@ -26,7 +26,6 @@ from c_hypermem.stores.vector_store import (
     collect_hyper_edge_description_index_items,
     collect_node_content_index_items,
     collect_node_local_graph_index_items,
-    collect_node_summary_index_items,
     collect_turn_dialogue_index_item,
     make_vector_point_id,
 )
@@ -65,7 +64,6 @@ class Memory:
                 self.vector_stores.update(
                     {
                         "node_content": self._default_qdrant_vector_store("node_content"),
-                        "node_summary": self._default_qdrant_vector_store("node_summary"),
                         "hyper_edge_description": self._default_qdrant_vector_store("hyper_edge_description"),
                         "edge_cluster_canonical": self._default_qdrant_vector_store("edge_cluster_canonical"),
                         "edge_cluster_variant": self._default_qdrant_vector_store("edge_cluster_variant"),
@@ -273,10 +271,6 @@ class Memory:
                 make_vector_point_id(node.namespace, "node_content", node.node_id)
                 for node in nodes
             ],
-            "node_summary": [
-                make_vector_point_id(node.namespace, "node_summary", node.node_id)
-                for node in nodes
-            ],
         }
         for item_type, ids in ids_by_type.items():
             store = self.vector_stores.get(item_type)
@@ -290,14 +284,6 @@ class Memory:
             [
                 item
                 for item in collect_node_content_index_items(nodes)
-                if item.payload.get("node_status") == "active"
-            ],
-        )
-        self._index_items(
-            "node_summary",
-            [
-                item
-                for item in collect_node_summary_index_items(nodes)
                 if item.payload.get("node_status") == "active"
             ],
         )
@@ -404,7 +390,6 @@ def _with_turn_ids(metadata: dict[str, Any], turn_ids: list[str]) -> dict[str, A
 _VECTOR_INDEX_TYPES = [
     "node_local_graph",
     "node_content",
-    "node_summary",
     "hyper_edge_description",
     "edge_cluster_canonical",
     "edge_cluster_variant",

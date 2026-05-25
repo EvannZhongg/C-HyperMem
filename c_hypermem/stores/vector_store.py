@@ -332,23 +332,11 @@ def collect_node_content_index_items(nodes: Sequence[MemoryNode]) -> list[Vector
     return [
         VectorIndexItem(
             id=make_vector_point_id(node.namespace, "node_content", node.node_id),
-            text=node.content,
+            text=node_content_embedding_text(node),
             payload=_node_payload(node, "node_content"),
         )
         for node in nodes
-        if node.content.strip()
-    ]
-
-
-def collect_node_summary_index_items(nodes: Sequence[MemoryNode]) -> list[VectorIndexItem]:
-    return [
-        VectorIndexItem(
-            id=make_vector_point_id(node.namespace, "node_summary", node.node_id),
-            text=node.summary,
-            payload=_node_payload(node, "node_summary"),
-        )
-        for node in nodes
-        if node.summary.strip()
+        if node_content_embedding_text(node)
     ]
 
 
@@ -442,6 +430,11 @@ def turn_dialogue_embedding_text(messages: Sequence[Message]) -> str:
         if label is None or not content:
             continue
         lines.append(f"{label}: {content}")
+    return "\n".join(lines)
+
+
+def node_content_embedding_text(node: MemoryNode) -> str:
+    lines = [part.strip() for part in [node.content, node.summary] if part.strip()]
     return "\n".join(lines)
 
 

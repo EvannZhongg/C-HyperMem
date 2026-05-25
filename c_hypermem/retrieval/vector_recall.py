@@ -8,10 +8,9 @@ from c_hypermem.stores.base import MemoryStore
 from c_hypermem.stores.vector_store import VectorSearchHit, VectorStore
 
 
-_NODE_VECTOR_CHANNELS = ("node_content", "node_local_graph", "node_summary")
+_NODE_VECTOR_CHANNELS = ("node_content", "node_local_graph")
 _VECTOR_ITEM_LABELS = {
     "node_content": "node_content",
-    "node_summary": "node_summary",
     "node_local_graph": "node_local_graph",
 }
 
@@ -105,8 +104,6 @@ class DenseVectorRecall:
     def _channel_limit(self, channel: str) -> int:
         if channel == "node_content":
             return max(0, self.config.node_content_vector_top_k)
-        if channel == "node_summary":
-            return max(0, self.config.node_summary_vector_top_k)
         if channel == "node_local_graph":
             return max(0, self.config.node_local_graph_vector_top_k)
         return 0

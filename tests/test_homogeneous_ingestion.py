@@ -118,7 +118,6 @@ def test_edge_cluster_groups_edges_with_shared_member_node(tmp_path):
     assert cluster.conflict_state == "none"
     assert cluster.canonical_description == f"HyperEdges sharing node: {shared_node_id}"
     assert {member.edge_id for member in members} == {edge.edge_id for edge in edges}
-    assert {member.relation_to_cluster for member in members} == {"shared_node"}
 
 
 def test_entity_label_nodes_reuse_existing_alias_entry(tmp_path):
@@ -202,12 +201,12 @@ def test_node_summary_maintenance_concatenates_sources_below_k_and_reindexes(tmp
     summary_state = node.metadata["maintenance"]["node_summary"]
     assert summary_state["summary_source_turn_ids"] == ["turn:0", "turn:1"]
     assert summary_state["pending_source_turn_ids"] == ["turn:0", "turn:1"]
-    summary_records = [
+    content_records = [
         record
         for record in vector_store.records
-        if record.payload["item_type"] == "node_summary" and record.payload["node_id"] == node.node_id
+        if record.payload["item_type"] == "node_content" and record.payload["node_id"] == node.node_id
     ]
-    assert summary_records[-1].text == node.summary
+    assert content_records[-1].text == f"{node.content}\n{node.summary}"
 
 
 def test_node_summary_maintenance_compacts_at_k_sources(tmp_path):
@@ -666,6 +665,7 @@ def test_vector_indexing_uses_node_local_graph_and_hyper_edge_description(tmp_pa
     memory.close()
 
     item_types = [record.payload["item_type"] for record in vector_store.records]
+    assert item_types.count("node_content") == 3
     assert item_types.count("node_local_graph") == 3
     assert item_types.count("hyper_edge_description") == 2
 
@@ -686,6 +686,17 @@ def test_vector_indexing_uses_node_local_graph_and_hyper_edge_description(tmp_pa
     )
     assert graph_record.id == make_vector_point_id(namespace, "node_local_graph", preference.node_id)
     assert graph_record.text == preference_graph_text
+
+    content_record = next(
+        record
+        for record in vector_store.records
+        if record.payload["item_type"] == "node_content"
+        and record.payload["node_id"] == preference.node_id
+    )
+    assert content_record.text == (
+        "Alice prefers morning interviews.\n"
+        "Alice has a scheduling preference for morning interviews."
+    )
 
     edge_descriptions = {edge.description for edge in edges}
     edge_records = [

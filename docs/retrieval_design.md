@@ -17,7 +17,7 @@
 
 - query analysis 模式。
 - lexical recall 候选数。
-- node content / node summary / node local graph 向量召回候选数。
+- node content / node local graph 向量召回候选数。`node_content` 向量文本由 `MemoryNode.content` 与 `MemoryNode.summary` 拼接生成，不再拆分独立 `node_summary` 向量通道。
 - RRF 后进入图谱涟漪扩散的 seed 数。
 - HyperEdge coherence 的 `alpha` / `beta` 权重。
 - 最终返回的 HyperEdge 数量。
@@ -30,7 +30,6 @@ Memory.search(query, namespace)
   -> parallel recall
      -> lexical node recall
      -> node_content vector recall
-     -> node_summary vector recall
      -> node_local_graph vector recall
   -> node-level fusion
      -> Reciprocal Rank Fusion
@@ -44,13 +43,14 @@ Memory.search(query, namespace)
 
 ## 向量召回
 
-用户 query 会先被向量化，然后分别查询三个向量索引：
+用户 query 会先被向量化，然后分别查询两个 node 向量索引：
 
 - `node_content`
-- `node_summary`
 - `node_local_graph`
 
 每个向量命中必须通过 payload 中的 `node_id` 回到 SQLite canonical store 读取 `MemoryNode`。向量索引只作为可重建旁路索引，不作为权威数据源。
+
+`node_content` 索引文本为 node content 与 node summary 的拼接；当 summary 拼接或压缩维护导致 `MemoryNode.summary` 更新时，写入闭环必须用同一个 node content vector point id 覆盖更新。
 
 ## Lexical 召回
 

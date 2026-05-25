@@ -205,7 +205,6 @@ class EdgeClusterMember(BaseModel):
     namespace: str
     cluster_id: str
     edge_id: str
-    relation_to_cluster: str = "supports"
     status: MemoryStatus = "active"
     metadata: dict[str, Any] = Field(default_factory=dict)
 

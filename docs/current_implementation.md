@@ -89,7 +89,7 @@ Memory.add_memory/add
 - 当 `pending_source_turn_ids` 数量达到 `maintenance.node_summary.compact_after_k_sources`，默认 `10`，或累计 summary 的 token 数达到 `maintenance.node_summary.max_tokens`，默认 `2048`，会强触发 `maintenance/node_summary_compaction.md`。
 - 压缩 prompt 是自然语言 prompt；LLM 只返回 `{"summary": "..."}`，不输出系统 ID、来源、图结构、置信度或维护动作。
 - 如果达到压缩触发条件但没有维护 LLM，写入会显式失败，不做规则兜底摘要。
-- summary 变化后仍通过原有写入闭环持久化 SQLite/FTS，并重写 `node_summary` 向量点。
+- summary 变化后仍通过原有写入闭环持久化 SQLite/FTS，并重写合并后的 `node_content` 向量点。该向量文本由 `MemoryNode.content` 与 `MemoryNode.summary` 拼接生成。
 
 当前已接入 LocalTriple 维护：
 
@@ -145,7 +145,6 @@ maintenance:
 - 不同向量语义类型使用不同 Qdrant collection，避免全部混入同一个向量表：
   - `c_hypermem_memory_node_local_graph`
   - `c_hypermem_memory_node_content`
-  - `c_hypermem_memory_node_summary`
   - `c_hypermem_memory_hyper_edge_description`
   - `c_hypermem_memory_edge_cluster_canonical`
   - `c_hypermem_memory_edge_cluster_variant`
@@ -158,12 +157,12 @@ maintenance:
   ```
 
   payload 中仍保留 `node_id/triple_ids/triple_count/triples/attributes/node_metadata`。当一个 node 后续新增或更新 triples 时，会用同一个 `node_id` 生成的向量点 ID 覆盖更新该 node 的 local graph 向量；该向量可以被该 node 内每个 triple 通过 payload 中的 `triple_ids` 回指。
-- `node_content` / `node_summary` 向量：索引 `MemoryNode.content` 和 `MemoryNode.summary` 原文，payload 中保留 `node_id/node_labels/status/time/metadata` 等信息。
+- `node_content` 向量：索引 `MemoryNode.content` 与 `MemoryNode.summary` 的拼接文本，payload 中保留 `node_id/node_labels/status/time/metadata` 等信息。当前不再创建独立 `node_summary` 向量 collection。
 - `hyper_edge_description` 向量：索引每条具体 `HyperEdge.description`，payload 中保留 `edge_id/edge_fingerprint/node_ids/member_policy/member_signature/time/metadata` 等信息。
 - `edge_cluster_canonical` 向量：索引 `EdgeCluster.canonical_description`，payload 中保留 `cluster_id/cluster_labels/conflict_state` 等信息。
 - `edge_cluster_variant` 向量：索引 `EdgeCluster.description_variants` 中的各个描述变体，payload 中保留 `cluster_id/variant_index/source_edge_id` 等信息。`BasicEdgeClusterBuilder` 复用已有 cluster 时会追加新的 description variant，并重新持久化 cluster。
 - `turn_dialogue` 向量：只索引同一个 `turn_id` 下 role 为 `user` 和 `assistant` 的消息，按轮次拼接为完整对话日志，且 payload 中必须带 `turn_id`、`turn_index` 和 `dialogue_roles`。后续检索命中该向量时，应拿 `turn_id` 回 SQLite `turns` 表提取完整对话，而不是依赖向量库中的文本作为权威上下文。
-- 当节点退役时，会删除该节点对应的 node-local-graph、node_content 和 node_summary 向量点，避免非 active 节点继续被向量召回。其中 node-local-graph 向量删除显式调用 `node_local_graph` collection 对应的 vector store。
+- 当节点退役时，会删除该节点对应的 node-local-graph 和 node_content 向量点，避免非 active 节点继续被向量召回。其中 node-local-graph 向量删除显式调用 `node_local_graph` collection 对应的 vector store。
 
 ## 7. 检索现状
 
@@ -180,7 +179,6 @@ Memory.search(query, namespace)
      -> DenseVectorRecall.recall(...)
         - node_content top 20
         - node_local_graph top 20
-        - node_summary top 10
      -> SQLiteFTSRecall.recall(...)
         - SQLite FTS top 30
      -> reciprocal_rank_fusion(...)
@@ -210,7 +208,6 @@ retrieval:
   lexical_top_k: 30
   node_content_vector_top_k: 20
   node_local_graph_vector_top_k: 20
-  node_summary_vector_top_k: 10
   graph_seed_top_k: 80
   edge_coherence_alpha: 0.5
   edge_coherence_beta: 2.0
@@ -264,7 +261,7 @@ SearchResult 当前结构要点：
 
 - Node summary、LocalTriple 与 description-only HyperEdge description 维护已接入同构节点/边合并路径；更完整的 memory node merge/update/conflict 仍待实现。
 - `state/task/instruction/tool` 已作为标签配置存在，但尚未都有专门构建策略；当前主要依靠 LLM 输出 labels 和统一节点结构承载。`turn` 已从节点标签配置中独立出来，只作为对话记录和来源追踪配置。
-- 检索主流程已接入 node_content、node_summary、node-local-graph 三路向量召回，但尚未接入 EdgeCluster canonical / variant 向量召回，也未接入 turn_dialogue 向量召回。
+- 检索主流程已接入 node_content（content + summary 拼接）和 node-local-graph 两路向量召回，但尚未接入 EdgeCluster canonical / variant 向量召回，也未接入 turn_dialogue 向量召回。
 - EdgeCluster 保留为共享成员节点形成的聚合视图；检索侧已能在命中 edge 所属 cluster 时带出 `description_variants` 和 sibling edge nodes。当前不做相似 cluster 向量召回、LLM cluster merge、后台宏观整理或复杂冲突状态维护。
 - LocalNodeGraph 当前只覆盖 event participants、entity attributes 和 assertion SPO；还没有从事件内部关系、工具调用、任务状态中构建更丰富的局部图。
 
@@ -304,7 +301,7 @@ SearchResult 当前结构要点：
 
 - **检索增强**
   设计方向：lexical + vector + hyperedge + edge cluster + temporal + rerank。
-  当前方案：检索侧已接入 SQLite FTS + node_content/node_summary/node-local-graph 三路向量召回，通过 RRF 融合，再做 HyperEdge / EdgeCluster 涟漪扩散，最终返回 top K 条 HyperEdge 及其成员 nodes。EdgeCluster canonical / variant 向量召回、turn_dialogue 召回、entity alias recall、temporal filter 和 LLM rerank 暂未接入。
+  当前方案：检索侧已接入 SQLite FTS + node_content（content + summary 拼接）/node-local-graph 两路向量召回，通过 RRF 融合，再做 HyperEdge / EdgeCluster 涟漪扩散，最终返回 top K 条 HyperEdge 及其成员 nodes。EdgeCluster canonical / variant 向量召回、turn_dialogue 召回、entity alias recall、temporal filter 和 LLM rerank 暂未接入。
   原因：先完成 query_analysis=false 下的可解释混合召回和 edge-centered 返回，再逐步增加更多召回通道，避免把 query analysis、rerank 和多跳召回同时引入。
 
 - **事件驱动增量抽取**
@@ -339,10 +336,10 @@ SearchResult 当前结构要点：
   当前实现允许先创建具体 HyperEdge，再用共享节点 cluster 轻量聚合。EdgeCluster 不触发具体边合并，也不承担 cluster merge 维护。
 
 - **检索扩展属于独立 retrieval 组件**
-  `Retriever` 只负责编排，不直接写具体召回算法。当前拆分为 `SQLiteFTSRecall`、`DenseVectorRecall`、`reciprocal_rank_fusion` 和 `GraphRippleExpansion`。旧的 `EdgeExpansion` 仍保留为历史简单拓扑扩展模块，但当前主检索链路不再使用它。
+  `Retriever` 只负责编排，不直接写具体召回算法。当前拆分为 `SQLiteFTSRecall`、`DenseVectorRecall`、`reciprocal_rank_fusion` 和 `GraphRippleExpansion`。旧的 node-centered `EdgeExpansion` 与 node result formatter 已移除。
 
 - **不同语义向量使用独立 collection**
-  当前已索引 node-local-graph、节点 content、节点 summary、EdgeCluster canonical description、EdgeCluster description variants 和 turn dialogue，但每类向量使用独立 Qdrant collection。检索侧已接入 node-local-graph、node_content、node_summary 三路向量召回，并保持分别限流、分别解释；后续新增 EdgeCluster 或 turn_dialogue 召回时也应保持该隔离方式。
+  当前已索引 node-local-graph、合并后的节点 content/summary、EdgeCluster canonical description、EdgeCluster description variants 和 turn dialogue，但每类向量使用独立 Qdrant collection。检索侧已接入 node-local-graph、node_content 两路向量召回，并保持分别限流、分别解释；后续新增 EdgeCluster 或 turn_dialogue 召回时也应保持该隔离方式。
 
 - **`unconfigured_label_policy` 只作为规则，不暴露为 prompt label**  
   这避免 LLM 抽取出 `default_policy` 或 `unconfigured_label_policy` 这类实现名标签。后续扩展 node label prompt 时应保持该行为。
@@ -362,7 +359,7 @@ SearchResult 当前结构要点：
 - SQLite `turns` 表保存交互历史，并为节点/边写入 `source_turn_ids`。
 - 默认向量后端配置为 Qdrant。
 - node-local-graph 向量索引按 node 聚合写入：一个 node 的 `content/triples` 拼成一段文本，只写入 1 个向量点，payload 中保留该 node 下所有 `triple_ids`。当前不再对散碎 triple 逐条 embedding。
-- 写入侧统一通过 `Memory._index_nodes_edges_and_clusters(...)` 为 node-local-graph、node content、node summary、HyperEdge description、EdgeCluster canonical description 和 EdgeCluster variants 建索引。
+- 写入侧统一通过 `Memory._index_nodes_edges_and_clusters(...)` 为 node-local-graph、合并后的 node content/summary、HyperEdge description、EdgeCluster canonical description 和 EdgeCluster variants 建索引。
 - `MemoryNode.content` 和 `MemoryNode.summary` 分别写入独立向量 collection。
 - `HyperEdge.description` 写入独立向量 collection。
 - `EdgeCluster.canonical_description` 和 `description_variants` 分别写入独立向量 collection。
@@ -374,14 +371,14 @@ SearchResult 当前结构要点：
 - 默认节点标签集合。
 - `unconfigured_label_policy` 不作为 prompt label 渲染，只以未配置标签规则传入。
 - 抽取 prompt 注入 `node_labels.yaml`。
-- Node summary 维护：低于 `k` 时跨来源拼接并重写 node_summary 向量；达到 `k` 或 token 上限时强触发 LLM 压缩；无维护 LLM 时显式失败。
+- Node summary 维护：低于 `k` 时跨来源拼接并重写 node_content 向量；达到 `k` 或 token 上限时强触发 LLM 压缩；无维护 LLM 时显式失败。
 - LocalTriple 维护：同 node 内 normalized S/P 相同触发 LLM 路由，覆盖 `keep_existing/keep_new/keep_both/merge/needs_review`，并验证 retired triples 不进入 node-local-graph 向量文本。
 - 维护 prompt registry 加载 `maintenance.node_summary_compaction` 和 `maintenance.local_triple_merge`。
 - LLM contradiction check 驱动的冲突 fact 退役与 correction edge。
 - `loves/travels_to` 等多值语义由维护 LLM 判为 compatible 时不会被错误退役。
 - EdgeCluster 作为共享成员节点的 HyperEdge 聚合视图，多个 sibling edges 会追加到同一 cluster。
 - SQLite FTS 召回通过 `nodes_fts` 检索 `content/summary/local_graph`。
-- node_content、node_summary、node-local-graph 三路向量召回接入检索主流程。
+- node_content、node-local-graph 两路向量召回接入检索主流程。
 - RRF 融合 lexical 和 vector 初始结果。
 - GraphRippleExpansion 根据 RRF 种子扩散到 HyperEdge 成员、EdgeCluster description variants 和 sibling edge nodes。
 - `edge_coherence` 在同一 HyperEdge 出现多个 seed hits 时产生非线性结构化加分。

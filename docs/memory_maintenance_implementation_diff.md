@@ -131,7 +131,7 @@ metadata
 - 会过滤空字符串。
 - 用空格拼接为单个 `MemoryNode.summary`。
 - 如果 LLM 没给 summaries，summary 就是空字符串。
-- 空 summary 不会写入 `node_summary` 向量。
+- summary 不再写入独立 `node_summary` 向量；`MemoryNode.summary` 会拼接到 `node_content` 向量文本中。
 
 同一 node 未来再次被抽取出来时：
 
@@ -150,7 +150,7 @@ metadata
 
 因此当前 summary 维护是**来源驱动、强触发、无兜底**的：
 
-- 低于阈值时仅拼接不同来源 summary，并随写入重建 `node_summary` 向量。
+- 低于阈值时仅拼接不同来源 summary，并随写入重建合并后的 `node_content` 向量。
 - 达到阈值时必须由维护 LLM 生成压缩摘要。
 - LLM 不输出 node_id、source_turn_ids、图结构、置信度或维护动作。
 - 无维护 LLM 或返回空 summary 时写入失败。
@@ -272,7 +272,7 @@ metadata
 - 两条 HyperEdge 只要共享至少一个 `member_node_id`，就可以进入同一 EdgeCluster。
 - EdgeCluster 不触发 HyperEdge merge，也不判断支持、更新、冲突关系。
 - `description_variants` 只作为检索上下文资产保存，不作为 cluster 相似度合并依据。
-- `EdgeClusterMember.relation_to_cluster` 当前 schema 中仍存在，但不再作为维护决策入口；后续可在 schema 收敛时移除或降级为兼容字段。
+- `EdgeClusterMember.relation_to_cluster` 已移除；cluster 是共享节点形成的事实通过 `EdgeCluster.cluster_labels=["shared_node"]` 与 `metadata.shared_node_ids` 表达。
 
 当前没有：
 
@@ -300,7 +300,6 @@ metadata
 当前 Qdrant collections：
 
 - `node_content`
-- `node_summary`
 - `node_local_graph`
 - `hyper_edge_description`
 - `edge_cluster_canonical`
@@ -325,8 +324,7 @@ metadata
 
 当前已完成的轻量索引维护：
 
-- active `MemoryNode.content` 写入 `node_content`。
-- 非空 `MemoryNode.summary` 写入 `node_summary`。
+- active `MemoryNode.content` 与非空 `MemoryNode.summary` 拼接写入 `node_content`。
 - active node 的 active triples 拼入 `node_local_graph`，并用稳定 `node_id` point id 覆盖更新。
 - concrete `HyperEdge.description` 写入 `hyper_edge_description`，同 `edge_id` 更新 description 后覆盖同一 point id。
 - `EdgeCluster.canonical_description` 和 `description_variants` 写入独立 collection。
@@ -400,7 +398,7 @@ needs_review
 - 即使未达到 `k`，只要 summary token 数达到 `maintenance.node_summary.max_tokens`，也会触发压缩。
 - 压缩由 `maintenance/node_summary_compaction.md` 完成，输入包含 node context、累计 summary 和触发原因。
 - 输出只允许压缩后的 `summary`，不允许输出系统 ID、来源字段、图结构、置信度或维护动作。
-- summary 更新后必须重新写入 `node_summary` 向量。
+- summary 更新后必须重新写入合并后的 `node_content` 向量。
 
 仍待定义的 node-level merge/update/conflict 维护：
 
@@ -481,7 +479,7 @@ EdgeCluster 的职责只保留为共享节点聚合：
 当前阶段先保持轻量索引维护：active object upsert，description/summary/local graph 变化后用稳定 point id 覆盖更新。完整索引维护作为未来计划，需要覆盖：
 
 - node summary/content/local_graph 从非空变为空时删除对应向量点。
-- node retired/invalidated 后删除 `node_content`、`node_summary`、`node_local_graph` 点。
+- node retired/invalidated 后删除 `node_content`、`node_local_graph` 点。
 - edge description 从非空变为空时删除 `hyper_edge_description` 点。
 - edge retired/invalidated 后删除或过滤 `hyper_edge_description` 点。
 - edge member set、status、time、metadata 变化后的 payload 重写策略。

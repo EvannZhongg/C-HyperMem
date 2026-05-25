@@ -31,6 +31,10 @@ class ModelConfig(BaseModel):
     retry_backoff_max_sec: float = 60.0
 
 
+class TokenCountingConfig(BaseModel):
+    tokenizer_encoding: str = "cl100k_base"
+
+
 class NLPConfig(BaseModel):
     model_path: str = "models/en_core_web_sm"
 
@@ -131,13 +135,19 @@ class NodeSummaryMaintenanceConfig(BaseModel):
     enabled: bool = True
     compact_after_k_sources: int = Field(default=10, ge=1)
     max_tokens: int = Field(default=2048, ge=1)
-    tokenizer_encoding: str = "cl100k_base"
     prompt: str = "maintenance/node_summary_compaction.md"
 
 
 class LocalTripleMaintenanceConfig(BaseModel):
     enabled: bool = True
     prompt: str = "maintenance/local_triple_merge.md"
+
+
+class HyperEdgeDescriptionMaintenanceConfig(BaseModel):
+    enabled: bool = True
+    compact_after_k_sources: int = Field(default=10, ge=1)
+    max_tokens: int = Field(default=2048, ge=1)
+    prompt: str = "maintenance/hyper_edge_description_compaction.md"
 
 
 class EdgeClusterMaintenanceConfig(BaseModel):
@@ -147,6 +157,9 @@ class EdgeClusterMaintenanceConfig(BaseModel):
 class MaintenanceConfig(BaseModel):
     node_summary: NodeSummaryMaintenanceConfig = Field(default_factory=NodeSummaryMaintenanceConfig)
     local_triples: LocalTripleMaintenanceConfig = Field(default_factory=LocalTripleMaintenanceConfig)
+    hyper_edge_description: HyperEdgeDescriptionMaintenanceConfig = Field(
+        default_factory=HyperEdgeDescriptionMaintenanceConfig
+    )
     edge_cluster: EdgeClusterMaintenanceConfig = Field(default_factory=EdgeClusterMaintenanceConfig)
 
 
@@ -199,6 +212,7 @@ class MemoryConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     llm: ModelConfig | None = None
     embedding: ModelConfig | None = None
+    token_counting: TokenCountingConfig = Field(default_factory=TokenCountingConfig)
     nlp: NLPConfig = Field(default_factory=NLPConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)

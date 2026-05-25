@@ -94,12 +94,19 @@ class GraphAssembler:
                 edge_ref_members[edge_ref].append(node)
 
         edges: list[HyperEdge] = []
+        edges_by_id: dict[str, HyperEdge] = {}
         for edge_summary in extraction.edge_summaries:
             members = edge_ref_members.get(edge_summary.ref, [])
             if not members:
                 continue
-            edges.append(self.hyperedge_builder.build_from_summary(edge_summary, members, context))
-        return edges
+            incoming = self.hyperedge_builder.build_from_summary(edge_summary, members, context)
+            existing = edges_by_id.get(incoming.edge_id)
+            if existing is None:
+                stored = self.store.get_edges(context.namespace, [incoming.edge_id])
+                existing = stored[0] if stored else None
+            merged = self.maintenance.merge_edge(existing, incoming, context)
+            edges_by_id[merged.edge_id] = merged
+        return list(edges_by_id.values())
 
     def _merge_node(self, existing: MemoryNode | None, incoming: MemoryNode, context: AssemblyContext) -> MemoryNode:
         if existing is None:

@@ -19,6 +19,7 @@ class PromptRegistry:
         "retrieval.query_analysis": "retrieval/query_analysis.md",
         "maintenance.node_summary_compaction": "maintenance/node_summary_compaction.md",
         "maintenance.local_triple_merge": "maintenance/local_triple_merge.md",
+        "maintenance.hyper_edge_description_compaction": "maintenance/hyper_edge_description_compaction.md",
     }
 
     def __init__(self, package: str = "c_hypermem.prompts") -> None:

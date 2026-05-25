@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from c_hypermem import Memory
+from c_hypermem.config import MemoryConfig
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
 from c_hypermem.pipeline.node_builder import NodeBuilder
@@ -37,6 +39,17 @@ def test_node_builder_builds_homogeneous_node_from_extracted_node():
     assert node.local_graph.triples[0].predicate == "prefers"
 
 
+def test_default_config_uses_global_token_counting_config():
+    config = MemoryConfig.load("configs/default.yaml")
+    default_raw = yaml.safe_load(open("configs/default.yaml", encoding="utf-8")) or {}
+    models_raw = yaml.safe_load(open("configs/models.yaml", encoding="utf-8")) or {}
+
+    assert config.token_counting.tokenizer_encoding == "cl100k_base"
+    assert models_raw["token_counting"]["tokenizer_encoding"] == "cl100k_base"
+    assert "tokenizer_encoding" not in default_raw["maintenance"]["node_summary"]
+    assert "tokenizer_encoding" not in default_raw["maintenance"]["hyper_edge_description"]
+
+
 def test_ingestion_builds_nodes_and_description_only_hyperedges(tmp_path):
     memory = Memory.from_config(
         {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
@@ -65,7 +78,7 @@ def test_ingestion_builds_nodes_and_description_only_hyperedges(tmp_path):
         "Alice's interview scheduling preference.",
     }
     assert all(edge.metadata["source_turn_ids"] == ["turn:0"] for edge in edges)
-    assert all("edge_summary_ref" in edge.metadata for edge in edges)
+    assert all("edge_summary_refs" in edge.metadata for edge in edges)
     assert all(edge.node_ids for edge in edges)
     assert stats["entity_aliases"] >= 1
     assert clusters
@@ -235,6 +248,42 @@ def test_node_summary_maintenance_compacts_at_token_limit_before_k(tmp_path):
     assert node.summary == "Alice interview preference."
     assert maintenance_llm.call_count == 1
     assert node.metadata["maintenance"]["node_summary"]["last_compaction_trigger"]["reasons"] == ["token_limit"]
+
+
+def test_maintenance_token_counter_uses_global_token_counting_config(tmp_path):
+    maintenance_llm = MaintenanceLLM([{"summary": "Alice interview preference."}])
+    token_counter = RecordingTokenCounter(result=5)
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "token_counting": {"tokenizer_encoding": "test-encoding"},
+            "maintenance": {
+                "node_summary": {
+                    "compact_after_k_sources": 10,
+                    "max_tokens": 5,
+                }
+            },
+        },
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload("Alice prefers calm morning interview scheduling."),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    memory.ingestion.assembler.maintenance._token_counter = token_counter
+    namespace = "global_token_counting_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I prefer calm morning interviews.", namespace=namespace)
+    memory.close()
+
+    assert memory.config.token_counting.tokenizer_encoding == "test-encoding"
+    assert token_counter.inputs == [
+        "Alice prefers calm morning interview scheduling.",
+        "Alice profile.",
+    ]
+    assert maintenance_llm.call_count == 1
 
 
 def test_node_summary_compaction_requires_maintenance_llm(tmp_path):
@@ -616,6 +665,95 @@ def test_vector_indexing_uses_node_local_graph_and_hyper_edge_description(tmp_pa
     assert {record.payload["edge_id"] for record in edge_records} == {edge.edge_id for edge in edges}
 
 
+def test_hyperedge_maintenance_reuses_same_member_set_and_reindexes_description(tmp_path):
+    embedding_client = RecordingEmbeddingClient()
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "maintenance": {
+                "hyper_edge_description": {
+                    "compact_after_k_sources": 3,
+                    "max_tokens": 1000,
+                }
+            },
+        },
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload("Alice is the user.", edge_description="Alice identity."),
+                _single_entity_payload("Alice is preparing for interviews.", edge_description="Alice interview context."),
+            ]
+        ),
+        embedding_client=embedding_client,
+        vector_store=vector_store,
+    )
+    namespace = "hyperedge_reuse_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I am Alice.", namespace=namespace)
+    memory.add_memory("I am preparing for interviews.", namespace=namespace)
+    edges = memory.store.list_edges(namespace)
+    clusters = memory.store.list_edge_clusters(namespace)
+    memory.close()
+
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge.description == "Alice identity.\nAlice interview context."
+    assert edge.metadata["source_turn_ids"] == ["turn:0", "turn:1"]
+    assert edge.metadata["edge_summary_refs"] == ["e1"]
+    state = edge.metadata["maintenance"]["hyper_edge_description"]
+    assert state["description_source_turn_ids"] == ["turn:0", "turn:1"]
+    assert state["pending_source_turn_ids"] == ["turn:0", "turn:1"]
+    assert len(clusters) == 1
+    assert clusters[0].canonical_description == edge.description
+    edge_records = [
+        record for record in vector_store.records if record.payload["item_type"] == "hyper_edge_description"
+    ]
+    assert len(edge_records) == 2
+    assert edge_records[0].id == edge_records[1].id
+    assert edge_records[-1].text == edge.description
+    assert edge_records[-1].payload["edge_metadata"]["source_turn_ids"] == ["turn:0", "turn:1"]
+
+
+def test_hyperedge_description_compacts_at_k_sources(tmp_path):
+    maintenance_llm = MaintenanceLLM([{"description": "Alice profile and interview context."}])
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "maintenance": {
+                "hyper_edge_description": {
+                    "compact_after_k_sources": 2,
+                    "max_tokens": 1000,
+                }
+            },
+        },
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload("Alice is the user.", edge_description="Alice identity."),
+                _single_entity_payload("Alice is preparing for interviews.", edge_description="Alice interview context."),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "hyperedge_description_compact_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I am Alice.", namespace=namespace)
+    memory.add_memory("I am preparing for interviews.", namespace=namespace)
+    edge = memory.store.list_edges(namespace)[0]
+    memory.close()
+
+    assert maintenance_llm.call_count == 1
+    assert "Alice identity.\nAlice interview context." in maintenance_llm.prompts[0]
+    assert "edge_id" not in maintenance_llm.prompts[0]
+    assert edge.description == "Alice profile and interview context."
+    assert edge.metadata["source_turn_ids"] == ["turn:0", "turn:1"]
+    state = edge.metadata["maintenance"]["hyper_edge_description"]
+    assert state["pending_source_turn_ids"] == []
+    assert state["compaction_count"] == 1
+    assert state["last_compaction_trigger"]["reasons"] == ["source_count"]
+
+
 class StaticHomogeneousExtractor:
     def extract(self, window, context):
         return MemoryExtraction.model_validate(
@@ -672,9 +810,9 @@ class SequenceHomogeneousExtractor:
         return MemoryExtraction.model_validate(payload)
 
 
-def _single_entity_payload(summary, *, triples=None):
+def _single_entity_payload(summary, *, triples=None, edge_description="Alice profile."):
     return {
-        "edge_summaries": [{"ref": "e1", "description": "Alice profile."}],
+        "edge_summaries": [{"ref": "e1", "description": edge_description}],
         "nodes": [
             {
                 "ref": "n1",
@@ -712,6 +850,16 @@ class RecordingEmbeddingClient:
     def embed(self, texts):
         self.inputs.append(list(texts))
         return [[float(index + 1)] for index, _ in enumerate(texts)]
+
+
+class RecordingTokenCounter:
+    def __init__(self, result):
+        self.result = result
+        self.inputs = []
+
+    def count(self, text):
+        self.inputs.append(text)
+        return self.result
 
 
 class RecordingVectorStore:

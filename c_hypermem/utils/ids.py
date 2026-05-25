@@ -47,6 +47,11 @@ def make_edge_id(namespace: str, edge_fingerprint: str) -> str:
     return f"edge:{digest}"
 
 
+def make_edge_fingerprint(member_node_ids: list[str]) -> str:
+    digest = stable_hash(sorted(member_node_ids), length=64)
+    return f"sha256:{digest}"
+
+
 def make_cluster_id(namespace: str, cluster_fingerprint: str) -> str:
     digest = stable_hash(namespace, cluster_fingerprint)
     return f"cluster:{digest}"

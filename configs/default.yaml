@@ -54,11 +54,15 @@ maintenance:
     enabled: true
     compact_after_k_sources: 10
     max_tokens: 2048
-    tokenizer_encoding: cl100k_base
     prompt: maintenance/node_summary_compaction.md
   local_triples:
     enabled: true
     prompt: maintenance/local_triple_merge.md
+  hyper_edge_description:
+    enabled: true
+    compact_after_k_sources: 10
+    max_tokens: 2048
+    prompt: maintenance/hyper_edge_description_compaction.md
   edge_cluster:
     background:
       enabled: false

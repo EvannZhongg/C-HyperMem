@@ -96,6 +96,7 @@ class BasicEdgeClusterBuilder:
         if self.store is not None:
             existing = self.store.find_edge_cluster_by_fingerprint(context.namespace, cluster_fingerprint)
             if existing is not None:
+                existing.canonical_description = cluster_description
                 self._append_description_variant(existing, edge)
                 return existing, True
         cluster = EdgeCluster(
@@ -138,7 +139,7 @@ def cluster_fingerprint_for_edge(edge: HyperEdge, label: str, cluster_descriptio
                 "predicate": hint.get("predicate"),
             },
         )
-    return make_fingerprint(cluster_description, {"cluster_label": label})
+    return make_fingerprint(edge.edge_id, {"cluster_label": label})
 
 
 def edge_cluster_label(edge: HyperEdge) -> str:

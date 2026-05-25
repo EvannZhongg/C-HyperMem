@@ -13,7 +13,7 @@ from c_hypermem.pipeline.graph_utils import (
     dedupe_labels,
     deep_merge_dict,
 )
-from c_hypermem.schema import LocalTriple, MemoryNode
+from c_hypermem.schema import HyperEdge, LocalTriple, MemoryNode
 from c_hypermem.utils.ids import make_local_triple_id, make_source_triple_id, semantic_triple_qualifiers
 from c_hypermem.utils.prompts import PromptRegistry
 from c_hypermem.utils.text import normalize_text
@@ -57,6 +57,35 @@ class GraphMaintenance:
             context=context,
         )
         return touch_node_update(existing, context.current_turn)
+
+    def merge_edge(self, existing: HyperEdge | None, incoming: HyperEdge, context: AssemblyContext) -> HyperEdge:
+        if existing is None:
+            return self._initialize_new_edge(incoming, context)
+
+        incoming_source_ids = _source_turn_ids_from_metadata(incoming.metadata)
+        incoming_description = incoming.description.strip()
+
+        existing.status = incoming.status if existing.status != "active" else existing.status
+        existing.member_policy = incoming.member_policy
+        existing.member_signature = incoming.member_signature
+        existing.member_version = max(existing.member_version, incoming.member_version)
+        existing.node_ids = list(dict.fromkeys([*existing.node_ids, *incoming.node_ids]))
+        existing.weights = {**existing.weights, **incoming.weights}
+        existing.metadata = _merge_edge_metadata(existing.metadata, incoming.metadata)
+        if existing.time.world.event_time is None:
+            existing.time.world.event_time = incoming.time.world.event_time
+        if existing.time.world.source_timestamp is None:
+            existing.time.world.source_timestamp = incoming.time.world.source_timestamp
+        existing.time.lifecycle.updated_at = utc_now_iso()
+        existing.time.activation.updated_turn = context.current_turn
+
+        self._maintain_edge_description(
+            existing,
+            incoming_description=incoming_description,
+            incoming_source_ids=incoming_source_ids,
+            context=context,
+        )
+        return existing
 
     def _maintain_local_triples(
         self,
@@ -230,6 +259,23 @@ class GraphMaintenance:
             _mark_summary_compacted(node, trigger, context)
         return node
 
+    def _initialize_new_edge(self, edge: HyperEdge, context: AssemblyContext) -> HyperEdge:
+        if not self.config.maintenance.hyper_edge_description.enabled:
+            return edge
+        state = _edge_description_state(edge)
+        source_ids = _source_turn_ids_from_metadata(edge.metadata) if edge.description.strip() else []
+        state["description_source_turn_ids"] = _unique_strings(
+            [*_strings(state.get("description_source_turn_ids")), *source_ids]
+        )
+        state["pending_source_turn_ids"] = _unique_strings([*_strings(state.get("pending_source_turn_ids")), *source_ids])
+        state.setdefault("compaction_count", 0)
+        _set_edge_description_state(edge, state)
+        trigger = self._edge_description_trigger(edge.description, state)
+        if trigger is not None:
+            edge.description = self._compact_edge_description(edge, trigger=trigger, context=context)
+            _mark_edge_description_compacted(edge, trigger, context)
+        return edge
+
     def _maintain_node_summary(
         self,
         node: MemoryNode,
@@ -265,6 +311,42 @@ class GraphMaintenance:
         node.summary = self._compact_node_summary(node, trigger=trigger, context=context)
         _mark_summary_compacted(node, trigger, context)
 
+    def _maintain_edge_description(
+        self,
+        edge: HyperEdge,
+        *,
+        incoming_description: str,
+        incoming_source_ids: list[str],
+        context: AssemblyContext,
+    ) -> None:
+        if not self.config.maintenance.hyper_edge_description.enabled:
+            if not edge.description and incoming_description:
+                edge.description = incoming_description
+            return
+        if not incoming_description:
+            return
+
+        state = _edge_description_state(edge)
+        known_sources = _strings(state.get("description_source_turn_ids"))
+        new_source_ids = [source_id for source_id in incoming_source_ids if source_id not in known_sources]
+        if incoming_description.strip() not in _description_parts(edge.description):
+            edge.description = _join_summaries(edge.description, incoming_description)
+        if not new_source_ids:
+            return
+
+        state["description_source_turn_ids"] = _unique_strings([*known_sources, *new_source_ids])
+        state["pending_source_turn_ids"] = _unique_strings(
+            [*_strings(state.get("pending_source_turn_ids")), *new_source_ids]
+        )
+        state.setdefault("compaction_count", 0)
+        _set_edge_description_state(edge, state)
+
+        trigger = self._edge_description_trigger(edge.description, state)
+        if trigger is None:
+            return
+        edge.description = self._compact_edge_description(edge, trigger=trigger, context=context)
+        _mark_edge_description_compacted(edge, trigger, context)
+
     def _summary_trigger(self, summary: str, state: dict[str, Any]) -> dict[str, Any] | None:
         if not summary.strip():
             return None
@@ -286,6 +368,27 @@ class GraphMaintenance:
             "max_tokens": summary_config.max_tokens,
         }
 
+    def _edge_description_trigger(self, description: str, state: dict[str, Any]) -> dict[str, Any] | None:
+        if not description.strip():
+            return None
+        description_config = self.config.maintenance.hyper_edge_description
+        pending_count = len(_strings(state.get("pending_source_turn_ids")))
+        token_count = self._count_tokens(description)
+        reasons = []
+        if pending_count >= description_config.compact_after_k_sources:
+            reasons.append("source_count")
+        if token_count >= description_config.max_tokens:
+            reasons.append("token_limit")
+        if not reasons:
+            return None
+        return {
+            "reasons": reasons,
+            "pending_source_count": pending_count,
+            "compact_after_k_sources": description_config.compact_after_k_sources,
+            "token_count": token_count,
+            "max_tokens": description_config.max_tokens,
+        }
+
     def _compact_node_summary(
         self,
         node: MemoryNode,
@@ -302,6 +405,23 @@ class GraphMaintenance:
         if not summary:
             raise RuntimeError("Node summary maintenance LLM returned an empty summary.")
         return summary
+
+    def _compact_edge_description(
+        self,
+        edge: HyperEdge,
+        *,
+        trigger: dict[str, Any],
+        context: AssemblyContext,
+    ) -> str:
+        if self.llm is None:
+            raise RuntimeError("HyperEdge description maintenance reached a compaction trigger and requires an LLM.")
+        prompt = self._render_edge_description_compaction_prompt(edge, trigger, context)
+        payload = self.llm.generate_json(prompt)
+        result = HyperEdgeDescriptionCompactionResult.model_validate(payload)
+        description = result.description.strip()
+        if not description:
+            raise RuntimeError("HyperEdge description maintenance LLM returned an empty description.")
+        return description
 
     def _render_summary_compaction_prompt(
         self,
@@ -332,9 +452,37 @@ class GraphMaintenance:
             rendered = rendered.replace(placeholder, value)
         return rendered
 
+    def _render_edge_description_compaction_prompt(
+        self,
+        edge: HyperEdge,
+        trigger: dict[str, Any],
+        context: AssemblyContext,
+    ) -> str:
+        prompt_id = _prompt_id_from_path(self.config.maintenance.hyper_edge_description.prompt)
+        prompt = self.prompt_registry.load(prompt_id)
+        state = _edge_description_state(edge)
+        edge_context = {
+            "member_node_ids": edge.node_ids,
+            "member_count": len(edge.node_ids),
+            "source_ref_count": len(_strings(state.get("description_source_turn_ids"))),
+            "pending_source_count": len(_strings(state.get("pending_source_turn_ids"))),
+        }
+        replacements = {
+            "{{EDGE_CONTEXT}}": _compact_json(edge_context),
+            "{{ACCUMULATED_DESCRIPTION}}": edge.description,
+            "{{TRIGGER_CONTEXT}}": _compact_json(trigger),
+            "{{STRICT_JSON_SHAPE}}": (
+                'Return exactly one JSON object: {"description": "A compact description for this HyperEdge."}.'
+            ),
+        }
+        rendered = prompt.text
+        for placeholder, value in replacements.items():
+            rendered = rendered.replace(placeholder, value)
+        return rendered
+
     def _count_tokens(self, text: str) -> int:
         if self._token_counter is None:
-            self._token_counter = TikTokenCounter(self.config.maintenance.node_summary.tokenizer_encoding)
+            self._token_counter = TikTokenCounter(self.config.token_counting.tokenizer_encoding)
         return self._token_counter.count(text)
 
 
@@ -342,6 +490,12 @@ class NodeSummaryCompactionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str
+
+
+class HyperEdgeDescriptionCompactionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str
 
 
 class MergedTriplePayload(BaseModel):
@@ -394,6 +548,21 @@ def _set_summary_state(node: MemoryNode, state: dict[str, Any]) -> None:
     node.metadata["maintenance"] = maintenance
 
 
+def _edge_description_state(edge: HyperEdge) -> dict[str, Any]:
+    maintenance = edge.metadata.get("maintenance")
+    if not isinstance(maintenance, dict):
+        return {}
+    state = maintenance.get("hyper_edge_description")
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def _set_edge_description_state(edge: HyperEdge, state: dict[str, Any]) -> None:
+    maintenance = edge.metadata.get("maintenance")
+    maintenance = dict(maintenance) if isinstance(maintenance, dict) else {}
+    maintenance["hyper_edge_description"] = state
+    edge.metadata["maintenance"] = maintenance
+
+
 def _mark_summary_compacted(node: MemoryNode, trigger: dict[str, Any], context: AssemblyContext) -> None:
     state = _summary_state(node)
     state["pending_source_turn_ids"] = []
@@ -401,6 +570,15 @@ def _mark_summary_compacted(node: MemoryNode, trigger: dict[str, Any], context: 
     state["last_compacted_turn"] = context.current_turn
     state["last_compaction_trigger"] = trigger
     _set_summary_state(node, state)
+
+
+def _mark_edge_description_compacted(edge: HyperEdge, trigger: dict[str, Any], context: AssemblyContext) -> None:
+    state = _edge_description_state(edge)
+    state["pending_source_turn_ids"] = []
+    state["compaction_count"] = int(state.get("compaction_count") or 0) + 1
+    state["last_compacted_turn"] = context.current_turn
+    state["last_compaction_trigger"] = trigger
+    _set_edge_description_state(edge, state)
 
 
 def _initialize_triple_provenance(node: MemoryNode, context: AssemblyContext) -> None:
@@ -676,6 +854,27 @@ def _source_turn_ids(node: MemoryNode) -> list[str]:
     return _strings(node.metadata.get("source_turn_ids"))
 
 
+def _source_turn_ids_from_metadata(metadata: dict[str, Any]) -> list[str]:
+    return _strings(metadata.get("source_turn_ids"))
+
+
+def _merge_edge_metadata(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = deep_merge_dict(existing, incoming)
+    merged["source_turn_ids"] = _unique_strings(
+        [*_strings(existing.get("source_turn_ids")), *_strings(incoming.get("source_turn_ids"))]
+    )
+    merged["edge_summary_refs"] = _unique_strings(
+        [
+            *_strings(existing.get("edge_summary_refs")),
+            *_strings(existing.get("edge_summary_ref")),
+            *_strings(incoming.get("edge_summary_refs")),
+            *_strings(incoming.get("edge_summary_ref")),
+        ]
+    )
+    merged.pop("edge_summary_ref", None)
+    return merged
+
+
 def _strings(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -693,12 +892,18 @@ def _join_summaries(existing: str, incoming: str) -> str:
     return "\n".join(parts)
 
 
+def _description_parts(description: str) -> set[str]:
+    return {part.strip() for part in description.splitlines() if part.strip()}
+
+
 def _prompt_id_from_path(path: str) -> str:
     normalized = path.replace("\\", "/")
     if normalized == "maintenance/node_summary_compaction.md":
         return "maintenance.node_summary_compaction"
     if normalized == "maintenance/local_triple_merge.md":
         return "maintenance.local_triple_merge"
+    if normalized == "maintenance/hyper_edge_description_compaction.md":
+        return "maintenance.hyper_edge_description_compaction"
     return normalized.removesuffix(".md").replace("/", ".")
 
 

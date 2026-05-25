@@ -6,7 +6,7 @@ from c_hypermem.config import MemoryConfig
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.graph_utils import source_metadata
 from c_hypermem.schema import ExtractedEdgeSummary, HyperEdge, MemoryNode
-from c_hypermem.utils.ids import make_edge_id, make_fingerprint, make_member_signature
+from c_hypermem.utils.ids import make_edge_fingerprint, make_edge_id, make_member_signature
 from c_hypermem.utils.time import make_time_bundle
 
 
@@ -46,14 +46,7 @@ class BasicHyperEdgeBuilder:
         context: AssemblyContext,
     ) -> HyperEdge:
         node_ids = list(dict.fromkeys(node.node_id for node in member_nodes))
-        edge_fingerprint = make_fingerprint(
-            edge_summary.description,
-            {
-                "member_node_ids": sorted(node_ids),
-                "source_turn_ids": context.metadata.get("turn_ids", []),
-                "edge_ref": edge_summary.ref,
-            },
-        )
+        edge_fingerprint = make_edge_fingerprint(node_ids)
         edge = HyperEdge(
             edge_id=make_edge_id(context.namespace, edge_fingerprint),
             namespace=context.namespace,
@@ -67,7 +60,7 @@ class BasicHyperEdgeBuilder:
                 context,
                 source_ref=None,
                 extra={
-                    "edge_summary_ref": edge_summary.ref,
+                    "edge_summary_refs": [edge_summary.ref],
                     **dict(edge_summary.metadata),
                 },
             ),

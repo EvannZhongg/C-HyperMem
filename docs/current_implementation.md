@@ -15,6 +15,7 @@
 
 - 默认配置入口为 `configs/default.yaml`。
 - 模型配置拆在 `configs/models.yaml`，节点标签和 turn 记录配置拆在 `configs/node_labels.yaml`。
+- token 计算配置统一放在 `configs/models.yaml` 的 `token_counting.tokenizer_encoding`，维护项只配置触发阈值和 prompt。
 - 仅读取 C-HyperMem 项目根目录下的 `.env`，当前可以直接使用`.env`调用模型进行测试。
 - `.env` 已加入 `.gitignore`，仓库提供 `.env.example`。
 - `embedding.batch_size` 已加入配置，默认值为 `10`。
@@ -109,7 +110,6 @@ maintenance:
     enabled: true
     compact_after_k_sources: 10
     max_tokens: 2048
-    tokenizer_encoding: cl100k_base
     prompt: maintenance/node_summary_compaction.md
   local_triples:
     enabled: true

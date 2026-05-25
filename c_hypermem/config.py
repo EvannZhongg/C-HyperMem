@@ -122,17 +122,32 @@ class HyperEdgesConfig(BaseModel):
     resolution: HyperEdgeResolutionConfig = Field(default_factory=HyperEdgeResolutionConfig)
 
 
-class EdgeClusterPromptsConfig(BaseModel):
-    fact_merge: str = "maintenance/fact_merge.md"
-    contradiction_check: str = "maintenance/contradiction_check.md"
-    edge_merge: str = "maintenance/edge_merge.md"
-    edge_cluster_merge: str = "maintenance/edge_cluster_merge.md"
-    edge_conflict_check: str = "maintenance/edge_conflict_check.md"
-
-
 class BackgroundClusterMaintenanceConfig(BaseModel):
     enabled: bool = False
     trigger_every_k_writes: int = 100
+
+
+class NodeSummaryMaintenanceConfig(BaseModel):
+    enabled: bool = True
+    compact_after_k_sources: int = Field(default=10, ge=1)
+    max_tokens: int = Field(default=2048, ge=1)
+    tokenizer_encoding: str = "cl100k_base"
+    prompt: str = "maintenance/node_summary_compaction.md"
+
+
+class LocalTripleMaintenanceConfig(BaseModel):
+    enabled: bool = True
+    prompt: str = "maintenance/local_triple_merge.md"
+
+
+class EdgeClusterMaintenanceConfig(BaseModel):
+    background: BackgroundClusterMaintenanceConfig = Field(default_factory=BackgroundClusterMaintenanceConfig)
+
+
+class MaintenanceConfig(BaseModel):
+    node_summary: NodeSummaryMaintenanceConfig = Field(default_factory=NodeSummaryMaintenanceConfig)
+    local_triples: LocalTripleMaintenanceConfig = Field(default_factory=LocalTripleMaintenanceConfig)
+    edge_cluster: EdgeClusterMaintenanceConfig = Field(default_factory=EdgeClusterMaintenanceConfig)
 
 
 class EdgeClustersConfig(BaseModel):
@@ -140,10 +155,6 @@ class EdgeClustersConfig(BaseModel):
     create_from_related_hyperedges: bool = True
     allow_conflict_clusters: bool = True
     description_variants_limit: int = 8
-    maintenance_prompts: EdgeClusterPromptsConfig = Field(default_factory=EdgeClusterPromptsConfig)
-    background_maintenance: BackgroundClusterMaintenanceConfig = Field(
-        default_factory=BackgroundClusterMaintenanceConfig
-    )
 
 
 class LocalGraphConfig(BaseModel):
@@ -196,6 +207,7 @@ class MemoryConfig(BaseModel):
     turn: TurnConfig = Field(default_factory=TurnConfig)
     hyperedges: HyperEdgesConfig = Field(default_factory=HyperEdgesConfig)
     edge_clusters: EdgeClustersConfig = Field(default_factory=EdgeClustersConfig)
+    maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
     local_graph: LocalGraphConfig = Field(default_factory=LocalGraphConfig)
     time: TimeConfig = Field(default_factory=TimeConfig)
     index: IndexConfig = Field(default_factory=IndexConfig)

@@ -125,7 +125,11 @@ class Retriever:
             "source_turn_ids": node.metadata.get("source_turn_ids", []),
             "time": node.time.model_dump(mode="json"),
             "node_metadata": node.metadata,
-            "triples": [triple.model_dump(mode="json") for triple in node.local_graph.triples],
+            "triples": [
+                triple.model_dump(mode="json")
+                for triple in node.local_graph.triples
+                if triple.status == "active"
+            ],
         }
         return payload
 

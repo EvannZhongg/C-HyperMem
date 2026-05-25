@@ -20,6 +20,7 @@
 - `embedding.batch_size` 已加入配置，默认值为 `10`。
 - `ingestion.context_window_messages` 控制传给抽取模型的最近上下文消息数，默认值为 `3`。
 - `index.vector` 默认改为 `qdrant`；`index.vector_store` 提供本地 Qdrant 路径和 collection 名称，默认无需用户额外配置服务端。
+- `maintenance` 已从 `edge_clusters` 中独立为顶层配置；当前包含 `node_summary.*`、`local_triples.*` 和 `edge_cluster.background`。
 - 当前默认节点标签包括：`event/fact/entity/state/preference/task/instruction/tool`。
 - `turn` 不是 `MemoryNode` 标签；它是独立的原始对话记录配置，写入 `turns` 表和 `turn_dialogue` 向量索引，不需要 `LocalNodeGraph`。
 - `node_labels.unconfigured_label_policy` 是未配置标签的处理规则；传入 prompt 时只以规则文本出现，不作为可抽取 label 名称暴露给 LLM。
@@ -38,7 +39,7 @@
 
 Schema 层当前会拒绝旧抽取 shape，以及 LLM 输出的 `sources/source_refs/source_ref/edge_type/relation/polarity/roles/time` 等不应由模型生成的来源、typed-edge 或构建时间字段。系统 ID 由 `utils/ids.py` 生成，LLM 不生成 `node_id/edge_id/triple_id`。
 
-注意：当前已完成阶段 1-5 的主路径。维护 prompt 泛化、旧测试迁移和示例迁移仍会在后续阶段继续清理。
+注意：当前已完成阶段 1-5 的主路径，并已开始阶段 6 的 Node summary 和 LocalTriple 维护。旧测试迁移和示例迁移仍会在后续阶段继续清理。
 
 ## 4. 写入 Pipeline
 
@@ -49,6 +50,7 @@ Memory.add_memory/add
   -> IngestionPipeline
   -> LLMMemoryExtractor 或显式 extractor
   -> GraphAssembler
+     -> GraphMaintenance(node summary / local triple maintenance during node merge)
   -> SQLiteStore
   -> VectorStore(Qdrant, rebuildable side indexes)
 ```
@@ -72,22 +74,49 @@ Memory.add_memory/add
   - 根据 `node.edge_summary_refs` 反向收集 HyperEdge 成员。
   - 编排 `BasicHyperEdgeBuilder.build_from_summary()` 构建 description-only HyperEdge。
   - 编排 `BasicEdgeClusterBuilder` 按 edge description / optional metadata 复用或创建 EdgeCluster，并追加 cluster members。
+  - 编排 `GraphMaintenance.merge_node()` 对同一 node 的跨来源 summary 和 node 内 triples 做维护。
   - 对带 `entity` label 的节点写入 entity alias index；新主路径不再写入 fact property index。
 
-## 5. 维护 Prompt
+## 5. 维护
 
-`c_hypermem/prompts/maintenance` 仍保留为后续阶段的 prompt registry 资源。当前主写入路径不调用旧 fact/property/role/polarity 维护 prompt。
+旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md`、`edge_cluster_merge.md`、`edge_conflict_check.md` 已从 prompt registry 和 prompt 资源中移除。当前主写入路径不再保留旧 fact/property/role/polarity 维护入口。
 
-`configs/default.yaml` 已配置这些 prompt 路径，并预留：
+当前已接入 Node summary 维护：
+
+- 同一 node 被不同 `source_turn_ids` 再次写入且 incoming summary 非空时，`GraphMaintenance` 会把新 summary 追加到已有 summary。
+- 系统在 `node.metadata.maintenance.node_summary` 中维护 `summary_source_turn_ids`、`pending_source_turn_ids`、`compaction_count` 和最近一次压缩触发信息；这些 ID 只由系统写入。
+- 当 `pending_source_turn_ids` 数量达到 `maintenance.node_summary.compact_after_k_sources`，默认 `10`，或累计 summary 的 token 数达到 `maintenance.node_summary.max_tokens`，默认 `2048`，会强触发 `maintenance/node_summary_compaction.md`。
+- 压缩 prompt 是自然语言 prompt；LLM 只返回 `{"summary": "..."}`，不输出系统 ID、来源、图结构、置信度或维护动作。
+- 如果达到压缩触发条件但没有维护 LLM，写入会显式失败，不做规则兜底摘要。
+- summary 变化后仍通过原有写入闭环持久化 SQLite/FTS，并重写 `node_summary` 向量点。
+
+当前已接入 LocalTriple 维护：
+
+- `LocalGraphBuilder` 仍只负责对 incoming triples 做 normalized SPO 批内去重。
+- 同一 node merge 时，incoming triple 会先与已有 active triples 对齐 normalized subject，再判断 normalized predicate；只要 `(subject, predicate)` 相同，就强触发 `maintenance/local_triple_merge.md`。
+- LLM 只做路由判断：`keep_existing`、`keep_new`、`keep_both`、`merge`、`needs_review`。
+- 系统根据 LLM 返回的 caller refs 执行动作：丢弃 incoming、追加 incoming、退役 affected existing、保存 merged triple 或把 incoming 标为 `uncertain`。
+- 如果有同 S/P 候选但没有维护 LLM，写入会显式失败，不做规则兜底。
+- 无论 LLM 返回 `keep_existing/keep_new/keep_both/merge/needs_review` 哪个动作，该 node 都会随本次写入重写 `node_local_graph` 向量；向量文本只包含 active triples，因此被退役或标为 uncertain 的 triple 不参与拼接构建索引。
+
+`configs/default.yaml` 当前维护配置示例：
 
 ```yaml
-edge_clusters:
-  background_maintenance:
-    enabled: false
-    trigger_every_k_writes: 100
+maintenance:
+  node_summary:
+    enabled: true
+    compact_after_k_sources: 10
+    max_tokens: 2048
+    tokenizer_encoding: cl100k_base
+    prompt: maintenance/node_summary_compaction.md
+  local_triples:
+    enabled: true
+    prompt: maintenance/local_triple_merge.md
+  edge_cluster:
+    background:
+      enabled: false
+      trigger_every_k_writes: 100
 ```
-
-注意：旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md` 仍带有 property key、relation、roles、polarity 等历史措辞，已不应视为当前主路径契约。阶段 6 应将它们泛化或删除。
 
 ## 6. 存储
 
@@ -230,7 +259,7 @@ SearchResult 当前结构要点：
 
 当前实现仍低于设计文档的部分：
 
-- 维护 prompt 已存在，但旧 fact/property/role/polarity 维护链路不再接入当前主流程；后续需要泛化为 memory node / description-only edge 维护。
+- Node summary 与 LocalTriple 维护已接入同构节点合并路径；更完整的 memory node merge/update/conflict、description-only edge 维护和 EdgeCluster health/merge 仍待实现。
 - `state/task/instruction/tool` 已作为标签配置存在，但尚未都有专门构建策略；当前主要依靠 LLM 输出 labels 和统一节点结构承载。`turn` 已从节点标签配置中独立出来，只作为对话记录和来源追踪配置。
 - 检索主流程已接入 node_content、node_summary、node-local-graph 三路向量召回，但尚未接入 EdgeCluster canonical / variant 向量召回，也未接入 turn_dialogue 向量召回。
 - EdgeCluster 已按 topic fingerprint 查库复用并追加新边；检索侧已能在命中 edge 所属 cluster 时带出 `description_variants` 和 sibling edge nodes，但尚未实现相似 cluster 向量召回、LLM cluster merge、后台宏观整理和复杂冲突状态维护。
@@ -247,7 +276,7 @@ SearchResult 当前结构要点：
 
 - **memory node merge / update / contradiction**
   设计方向：旧 fact merge/conflict prompt 需要泛化为统一 MemoryNode 级维护。
-  当前方案：写入主路径只做确定性同 ID / entity alias 精确复用，不进行规则化事实 merge、冲突退役或 fallback 抽取。
+  当前方案：写入主路径只做确定性同 ID / entity alias 精确复用，并已实现 Node summary 的跨来源拼接与阈值压缩，以及 LocalTriple 同 S/P 候选的 LLM 路由维护；仍不进行规则化事实 merge、node 冲突退役或 fallback 抽取。
   原因：谓词是否多值、object 是否兼容、时间有效期如何更新都是语义判断，硬编码容易误退役事实。后续若接入维护 LLM，必须由明确候选召回触发，失败时显式失败。
 
 - **HyperEdge 复用与合并**
@@ -298,7 +327,7 @@ SearchResult 当前结构要点：
   当前 `BasicHyperEdgeBuilder` / `BasicEdgeClusterBuilder` 承担内置 M1 规则，`IngestionPipeline` 仍保留可注入的 `hyperedge_builder` / `edge_cluster_builder` 扩展点。这个形态比“只有 protocol 占位”更可运行，也比直接把规则写死在 assembler 更容易替换。
 
 - **维护 prompt 按候选触发，不做规则兜底**
-  原设计容易让后续实现把多个 maintenance prompt 串到每次写入中。当前主路径不调用旧 maintenance prompt；后续接入新 prompt 时，应有明确召回候选、触发条件、成本控制和失败处理，不应每次写入无条件多轮调用 LLM，也不应用脆弱规则代替语义判决。
+  原设计容易让后续实现把多个 maintenance prompt 串到每次写入中。当前主路径只在 Node summary 达到来源数或 token 阈值时调用 `maintenance.node_summary_compaction`，或在 LocalTriple 出现同 S/P 候选时调用 `maintenance.local_triple_merge`；后续接入新 prompt 时，应有明确召回候选、触发条件、成本控制和失败处理，不应每次写入无条件多轮调用 LLM，也不应用脆弱规则代替语义判决。
 
 - **`nodes` 作为长期记忆对象的唯一主输入**
   当前不再接受 `entities/events/assertions/sources` 主抽取 shape，也不建立 fact property index。后续即使扩展 extraction schema，也应避免同一事实在多个字段重复入库。
@@ -342,7 +371,9 @@ SearchResult 当前结构要点：
 - 默认节点标签集合。
 - `unconfigured_label_policy` 不作为 prompt label 渲染，只以未配置标签规则传入。
 - 抽取 prompt 注入 `node_labels.yaml`。
-- 维护 prompt registry 加载。
+- Node summary 维护：低于 `k` 时跨来源拼接并重写 node_summary 向量；达到 `k` 或 token 上限时强触发 LLM 压缩；无维护 LLM 时显式失败。
+- LocalTriple 维护：同 node 内 normalized S/P 相同触发 LLM 路由，覆盖 `keep_existing/keep_new/keep_both/merge/needs_review`，并验证 retired triples 不进入 node-local-graph 向量文本。
+- 维护 prompt registry 加载 `maintenance.node_summary_compaction` 和 `maintenance.local_triple_merge`。
 - LLM contradiction check 驱动的冲突 fact 退役与 correction edge。
 - `loves/travels_to` 等多值语义由维护 LLM 判为 compatible 时不会被错误退役。
 - EdgeCluster 按 topic fingerprint 复用，多个相关 state edge 会追加到同一 cluster。

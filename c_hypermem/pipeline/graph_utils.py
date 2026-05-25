@@ -8,7 +8,6 @@ from c_hypermem.schema import (
     EdgeClusterMember,
     HyperEdge,
     LocalNodeGraph,
-    MemoryNode,
 )
 from c_hypermem.utils.text import compact_key, normalize_text
 
@@ -19,14 +18,13 @@ def source_metadata(
     source_ref: str | None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    metadata = {
+    metadata = dict(extra or {})
+    metadata.update({
         "source_ref": source_ref,
         "source_session_id": context.metadata.get("session_id") or context.metadata.get("conversation_id"),
         "date": context.metadata.get("date"),
         "source_turn_ids": context.metadata.get("turn_ids", []),
-    }
-    if extra:
-        metadata.update(extra)
+    })
     return {key: value for key, value in metadata.items() if value not in (None, [], {})}
 
 
@@ -97,19 +95,3 @@ def dedupe_clusters(clusters: list[EdgeCluster]) -> list[EdgeCluster]:
 
 def dedupe_cluster_members(members: list[EdgeClusterMember]) -> list[EdgeClusterMember]:
     return list({(member.cluster_id, member.edge_id): member for member in members}.values())
-
-
-def merge_node(existing: MemoryNode | None, incoming: MemoryNode, context: AssemblyContext) -> MemoryNode:
-    if existing is None:
-        return incoming
-    from c_hypermem.utils.time import touch_node_update
-
-    existing.node_labels = dedupe_labels([*existing.node_labels, *incoming.node_labels])
-    existing.attributes = deep_merge_dict(existing.attributes, incoming.attributes)
-    existing.metadata = deep_merge_dict(existing.metadata, incoming.metadata)
-    existing.local_graph = merge_local_graph(existing.local_graph, incoming.local_graph)
-    if not existing.summary and incoming.summary:
-        existing.summary = incoming.summary
-    if not existing.content and incoming.content:
-        existing.content = incoming.content
-    return touch_node_update(existing, context.current_turn)

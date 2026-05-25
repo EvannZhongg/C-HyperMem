@@ -12,7 +12,6 @@ from c_hypermem.pipeline.edge_cluster_builder import EdgeClusterBuilder
 from c_hypermem.pipeline.extraction import ExtractionContext, ExtractionWindow, MemoryExtractor
 from c_hypermem.pipeline.hyperedge_builder import HyperEdgeBuilder
 from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
-from c_hypermem.pipeline.maintenance import GraphMaintenance
 from c_hypermem.schema import AgentInteraction, IngestionOutput, MemoryImportBatch, Message
 from c_hypermem.stores.base import MemoryStore
 
@@ -37,7 +36,6 @@ class IngestionPipeline:
         self.local_graph_builder = LocalGraphBuilder()
         self.hyperedge_builder = hyperedge_builder
         self.edge_cluster_builder = edge_cluster_builder
-        self.maintenance = GraphMaintenance()
 
     def ingest_interaction(
         self,
@@ -115,12 +113,6 @@ class IngestionPipeline:
             )
             edge_clusters.extend(clusters)
             edge_cluster_members.extend(members)
-        nodes, edges, edge_clusters, edge_cluster_members = self.maintenance.apply(
-            nodes,
-            edges,
-            edge_clusters,
-            edge_cluster_members,
-        )
         return IngestionOutput(
             nodes=nodes,
             retired_nodes=retired_nodes,

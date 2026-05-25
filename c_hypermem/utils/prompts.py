@@ -17,11 +17,8 @@ class PromptRegistry:
     PROMPT_PATHS = {
         "extraction.memory": "extraction/memory_extraction.md",
         "retrieval.query_analysis": "retrieval/query_analysis.md",
-        "maintenance.fact_merge": "maintenance/fact_merge.md",
-        "maintenance.contradiction_check": "maintenance/contradiction_check.md",
-        "maintenance.edge_merge": "maintenance/edge_merge.md",
-        "maintenance.edge_cluster_merge": "maintenance/edge_cluster_merge.md",
-        "maintenance.edge_conflict_check": "maintenance/edge_conflict_check.md",
+        "maintenance.node_summary_compaction": "maintenance/node_summary_compaction.md",
+        "maintenance.local_triple_merge": "maintenance/local_triple_merge.md",
     }
 
     def __init__(self, package: str = "c_hypermem.prompts") -> None:

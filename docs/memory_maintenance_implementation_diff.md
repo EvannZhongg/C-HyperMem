@@ -23,14 +23,23 @@
   -> LocalGraphBuilder 规范化和去重 node 内 triples
   -> edge_summary_refs 反向组装 description-only HyperEdge
   -> EdgeClusterBuilder 复用或创建 EdgeCluster，并追加 description variants
-  -> GraphMaintenance post-assembly hook
+  -> GraphMaintenance 在 node merge 时维护 Node summary 和 LocalTriple
   -> 写入 SQLite / FTS / 向量索引
 ```
 
 当前维护能力是**轻量、保守、无规则兜底**的：
 
-- `GraphMaintenance` 当前是 no-op hook，只负责保留维护扩展点。
-- 当前主写入路径不调用旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md`。
+- `GraphMaintenance` 已从 no-op post-assembly hook 改为 node merge 维护组件。
+- 当前主写入路径不调用旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md`，这些旧 prompt 已删除。
+- Node summary 维护已接入：
+  - 同一 node 的不同 `source_turn_ids` summary 在低于阈值时直接拼接。
+  - 达到 `maintenance.node_summary.compact_after_k_sources`，默认 `10`，或 `maintenance.node_summary.max_tokens`，默认 `2048`，强触发 `maintenance/node_summary_compaction.md`。
+  - LLM 只输出压缩后的 `summary`；系统继续负责 ID、来源、触发条件、状态 metadata 和索引重写。
+  - 达到触发条件但没有维护 LLM 时显式失败，不做规则兜底。
+- LocalTriple 维护已接入：
+  - 同一 node 内 incoming triple 先匹配 existing active triples 的 normalized subject，再匹配 normalized predicate；只要 `(subject, predicate)` 相同即触发 LLM 路由。
+  - LLM 输出 `keep_existing/keep_new/keep_both/merge/needs_review`，系统负责退役、追加、保存 merged triple、标记 uncertain 和索引重写。
+  - 有同 S/P 候选但没有维护 LLM 时显式失败，不做规则兜底。
 - 不存在旧 `fact_property_index`、`edge_type/relation/polarity/roles`、`role_in_edge/edge_relation` 兼容路径。
 - 节点复用只包含：
   - 同 deterministic `node_id` 的节点合并。
@@ -39,7 +48,7 @@
 
 低于长期设计的部分：
 
-- 还没有统一 MemoryNode merge/update/conflict 的 LLM 维护链。
+- 还没有统一 MemoryNode merge/update/conflict 的 LLM 维护链；当前仅完成 Node summary 和 LocalTriple 维护。
 - 还没有 description-only HyperEdge 的候选召回、复用、成员追加或版本化维护。
 - EdgeCluster 只做确定性聚合与 description variant 追加，没有后台 cluster merge 或冲突健康检查。
 - access maintenance 只更新命中 nodes，不更新 HyperEdge / EdgeCluster。
@@ -51,14 +60,14 @@
 | --- | --- | --- |
 | 一次抽取 | LLM 只输出 `nodes/edge_summaries/metadata`；schema 拒绝旧 `entities/events/assertions/sources` | 已对齐新架构 |
 | Node summary | `ExtractedNode.summaries` 可为空；`NodeBuilder` 将非空 summaries 拼成 `MemoryNode.summary` | 不保证每个 node 都有 summary |
-| Node summary 维护 | `merge_node()` 仅当旧 summary 为空且 incoming summary 非空时补写；不会覆盖已有 summary | 当前保守，缺少 summary merge/rewrite 维护 |
+| Node summary 维护 | `GraphMaintenance.merge_node()` 按系统 `source_turn_ids` 追踪 summary 来源；低于 `k` 时字符串拼接；达到来源数或 token 上限时调用 `node_summary_compaction` prompt 压缩 | 已完成第一阶段 Node summary 维护 |
 | Entity alias 复用 | 仅带 `entity` label 的节点使用 `canonical_text + metadata.aliases` 写入/查询 alias index | 已实现精确复用，不做模糊消歧 |
 | 普通节点复用 | `node_id = hash(namespace + fingerprint)`；同 ID 时合并 labels/attributes/metadata/local_graph | 已实现轻量合并 |
-| LocalGraph 维护 | 只消费 `ExtractedNode.triples`；按 normalized SPO 去重合并 | 已对齐同构节点路径 |
+| LocalGraph 维护 | incoming triples 先按 normalized SPO 去重；同 node merge 时 normalized S/P 相同触发 `local_triple_merge` LLM 路由 | 已完成轻量 LocalTriple 维护 |
 | HyperEdge 构建 | 由 `edge_summaries[].description` + member nodes 构建；schema/DB 不含 `edge_type/relation` | 已切到 description-only |
 | HyperEdge merge | 仅按 deterministic `edge_id` 批内去重和 DB upsert；无候选召回或 LLM merge | 未接入 |
 | EdgeCluster 维护 | 按 edge description / optional metadata fingerprint 复用 cluster，追加 description variants | 轻量实现 |
-| 维护 prompt | prompt registry 仍保留旧 prompt 文件；主路径不调用 | 待泛化或删除 |
+| 维护 prompt | 旧 fact/typed-edge prompts 已删除；当前保留 `maintenance.node_summary_compaction` 和 `maintenance.local_triple_merge` | 已清理旧主路径 prompt |
 | 退役/冲突 | 当前主路径没有 node conflict 判断、retire/invalidated 维护链 | 未接入 |
 | 向量索引维护 | upsert active nodes/edges/clusters；retired nodes 的 node vectors 有删除入口，但当前主路径几乎不产生 retired nodes | 部分实现 |
 | 访问维护 | `Memory.search()` 后对结果中的 nodes 调用 `touch_node_access()` | 只覆盖 nodes |
@@ -81,13 +90,13 @@
 4. 将最近 K 个 turn messages 作为 context，把本次消息作为 target 交给 extractor。
 5. `LLMMemoryExtractor` 或显式 extractor 返回 `MemoryExtraction(nodes, edge_summaries, metadata)`。
 6. `GraphAssembler` 生成 nodes / edges / edge_clusters / edge_cluster_members / entity_aliases。
-7. `GraphMaintenance.apply(...)` 当前原样返回。
+7. `GraphAssembler` 在同 node_id / entity alias 复用时调用 `GraphMaintenance.merge_node(...)` 维护 Node summary 和 LocalTriple。
 8. `Memory._persist_output(...)` 写入 SQLite，并更新 FTS / Qdrant side indexes。
 
 当前实现要点：
 
 - context 只用于消解 target 中的指代、省略和相对表达；不会单独从 context 生成 memory。
-- 系统将当前 `turn_id` 写入 `metadata.turn_ids`，再由 `source_metadata()` 注入 node / edge 的 `source_turn_ids`。
+- 系统将当前 `turn_id` 写入 `metadata.turn_ids`，再由 `source_metadata()` 注入 node / edge 的 `source_turn_ids`；如果 LLM metadata 中出现同名来源字段，系统来源会覆盖它。
 - 原始 turns 与结构化 memory graph 分离。
 
 ### 3.2 Node 构建与 summary 行为
@@ -120,23 +129,27 @@ metadata
 
 同一 node 未来再次被抽取出来时：
 
-- 如果 incoming node 与已有 node 同 `node_id`，或 entity alias 命中已有 entity node，则进入 `merge_node(existing, incoming, context)`。
+- 如果 incoming node 与已有 node 同 `node_id`，或 entity alias 命中已有 entity node，则进入 `GraphMaintenance.merge_node(existing, incoming, context)`。
 - 当前 merge 行为：
   - labels 取并集。
   - attributes / metadata 做深合并。
-  - local_graph triples 按 normalized SPO 去重追加。
-  - `existing.summary` 非空时保持不变。
-  - 只有 `existing.summary` 为空且 `incoming.summary` 非空时，才补写 summary。
+  - incoming local_graph triples 先按 normalized SPO 去重；不同 S/P 直接追加。
+  - 若 incoming triple 与 existing active triple 的 normalized S/P 相同，则调用 `maintenance.local_triple_merge` prompt 做路由判断。
+  - 如果 incoming summary 非空且来自新的 `source_turn_ids`，会追加到 existing summary。
+  - `node.metadata.maintenance.node_summary.summary_source_turn_ids` 记录已进入 summary 的来源。
+  - `node.metadata.maintenance.node_summary.pending_source_turn_ids` 记录上次压缩以来的来源批次。
+  - pending 来源数达到 `maintenance.node_summary.compact_after_k_sources`，或 summary token 数达到 `maintenance.node_summary.max_tokens` 时，强触发 `maintenance.node_summary_compaction`。
   - `content` 同理，只有旧 content 为空时才补写。
   - 更新 `updated_at/updated_turn`。
 
-因此当前 summary 维护是**只补缺、不重写、不总结历史**。这避免无维护 LLM 时误改已有记忆，但也意味着：
+因此当前 summary 维护是**来源驱动、强触发、无兜底**的：
 
-- 新抽取 summary 更完整时不会自动替换旧 summary。
-- 多次来源累积后不会自动生成聚合 summary。
-- summary 与新增 triples/metadata 可能逐渐不同步。
+- 低于阈值时仅拼接不同来源 summary，并随写入重建 `node_summary` 向量。
+- 达到阈值时必须由维护 LLM 生成压缩摘要。
+- LLM 不输出 node_id、source_turn_ids、图结构、置信度或维护动作。
+- 无维护 LLM 或返回空 summary 时写入失败。
 
-下一阶段若要维护 summary，应引入明确的 LLM summary maintenance，而不是规则拼接或覆盖。
+当前仍不会用 summary 内容做规则化冲突判断，也不会由代码兜底生成摘要。
 
 ### 3.3 Entity alias 维护
 
@@ -173,8 +186,18 @@ metadata
 
 - 每个 node 都可以携带 `ExtractedNode.triples`。
 - `LocalGraphBuilder.build_node()` 对 incoming triples 按 normalized `(subject, predicate, object)` 去重。
-- `merge_local_graph()` 对 existing 和 incoming local graph 做同样的 SPO 去重追加。
+- `GraphMaintenance.merge_node()` 对 different S/P triples 直接追加。
+- 当 incoming triple 和 existing active triple 的 normalized `(subject, predicate)` 相同时，调用 `maintenance/local_triple_merge.md`。
+- LLM 路由动作：
+  - `keep_existing`: 丢弃 incoming。
+  - `keep_new`: 退役 affected existing，保存 incoming。
+  - `keep_both`: 保存 incoming，旧 triple 保持 active。
+  - `merge`: 退役 affected existing，保存 LLM 返回的 merged triple。
+  - `needs_review`: 保存 incoming 且标记为 `uncertain`。
+- 退役或 uncertain 状态由系统写入 `LocalTriple.status` 和 maintenance qualifiers；LLM 不输出 `triple_id` 或系统来源字段。
+- 如果出现同 S/P 候选但没有维护 LLM，写入显式失败。
 - SQLite `triples` 表持久化 node 内 triples。
+- 无论路由结果是 `keep_existing/keep_new/keep_both/merge/needs_review` 哪一种，该 node 都会在本次写入后重写 `node_local_graph` 向量；非 active triples 保留在 canonical store 中，但不会进入 SQLite FTS local_graph 文本、node-local-graph 向量文本或检索返回的 active triples。
 - `HyperEdge` scope 会写入 triple 的：
   - `scope_edge_id`
   - qualifiers 中的 `scope_edge_id`
@@ -189,7 +212,7 @@ metadata
 
 缺口：
 
-- triple-level 冲突、退役、valid_time 维护尚未接入。
+- triple-level valid_time、superseded_by / invalidated_by 串联尚未接入。
 - 工具调用、任务状态、观察结果等复杂结构仍完全依赖 LLM 输出 triples，代码不做规则抽取。
 
 ### 3.5 HyperEdge 维护
@@ -288,11 +311,11 @@ metadata
 - 只更新 node 的 `last_access_turn/access_count`。
 - 不更新 HyperEdge / EdgeCluster access time。
 
-## 4. 下一阶段维护重构建议
+## 4. 后续维护重构建议
 
 ### 4.1 维护重构的边界
 
-下一阶段应把维护对象从旧 fact/property 改成：
+后续应继续把维护对象从旧 fact/property 改成：
 
 ```text
 MemoryNode
@@ -331,31 +354,25 @@ retire_existing
 needs_review
 ```
 
-summary 维护建议：
+当前已落地的 summary 维护契约：
 
-- 不要用字符串拼接或简单覆盖维护 summary。
-- 可新增 `memory_node_summary_maintenance.md` 或合并进 node merge prompt。
-- 输入应包含：
-  - incoming node canonical_text / summary / triples
-  - existing node canonical_text / summary / triples
-  - source_turn_ids
-  - recent metadata
-- 输出应明确：
-  - 是否更新 `summary`
-  - 是否更新 `content`
-  - 是否追加 triples
-  - 是否保留旧 summary
+- 小于 `maintenance.node_summary.compact_after_k_sources` 时，同一 node 的不同来源 summary 直接字符串拼接。
+- 即使未达到 `k`，只要 summary token 数达到 `maintenance.node_summary.max_tokens`，也会触发压缩。
+- 压缩由 `maintenance/node_summary_compaction.md` 完成，输入包含 node context、累计 summary 和触发原因。
+- 输出只允许压缩后的 `summary`，不允许输出系统 ID、来源字段、图结构、置信度或维护动作。
 - summary 更新后必须重新写入 `node_summary` 向量。
+
+仍待定义的 node-level merge/update/conflict 维护：
+
+- 是否更新 `content`。
+- 是否追加或退役 triples。
+- 是否 retire/invalidate existing node。
+- 是否 keep separate 或 needs review。
 
 ### 4.3 LocalTriple 维护
 
-当前 triples 只去重追加。下一阶段可增加：
+当前 LocalTriple 已支持同 S/P 候选的轻量 LLM 路由。下一阶段可增加：
 
-- triple-level status 维护：
-  - active
-  - retired
-  - invalidated
-  - uncertain
 - triple-level superseded_by / invalidated_by。
 - valid_time / qualifier 维护。
 
@@ -403,7 +420,7 @@ needs_review
    - 只在候选 cluster 明确时触发。
 
 2. 后台维护：
-   - 根据 `background_maintenance.trigger_every_k_writes` 低频触发。
+   - 根据 `maintenance.edge_cluster.background.trigger_every_k_writes` 低频触发。
    - 使用 EdgeCluster canonical / variants 向量召回相似 clusters。
    - 调用 cluster merge prompt。
 
@@ -441,12 +458,12 @@ needs_review
 优先补齐项：
 
 1. 定义 MemoryNode merge/update/conflict prompt 和 schema。
-2. 定义 summary maintenance 规则：只由 LLM 明确更新，不规则拼接。
+2. 为 LocalTriple 维护补充 valid_time、superseded_by / invalidated_by 链接和更细的索引删除策略。
 3. 基于 `hyper_edge_description` 向量召回设计 edge maintenance。
 4. 为 EdgeCluster 增加 conflict health / relation_to_cluster 维护。
 5. 明确 retired/invalidated node/edge/cluster 的向量删除策略。
 6. 将 access maintenance 扩展到 HyperEdge / EdgeCluster，或明确只以 node activation 作为评分依据。
-7. 更新或删除旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md` 中仍带旧概念的 prompt。
+7. 继续补齐 memory node merge/conflict、description-only edge maintenance 和 EdgeCluster health/merge prompt。
 
 ## 6. 代码位置索引
 

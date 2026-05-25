@@ -10,10 +10,10 @@ from c_hypermem.pipeline.graph_utils import (
     dedupe_cluster_members,
     dedupe_clusters,
     dedupe_edges,
-    merge_node,
     string_list,
 )
 from c_hypermem.pipeline.hyperedge_builder import BasicHyperEdgeBuilder
+from c_hypermem.pipeline.maintenance import GraphMaintenance
 from c_hypermem.pipeline.node_builder import NodeBuilder
 from c_hypermem.schema import (
     EdgeCluster,
@@ -37,7 +37,7 @@ class GraphAssembler:
         self.node_builder = NodeBuilder()
         self.hyperedge_builder = BasicHyperEdgeBuilder(config)
         self.edge_cluster_builder = BasicEdgeClusterBuilder(config, store)
-        self.maintenance_llm = maintenance_llm
+        self.maintenance = GraphMaintenance(config, llm=maintenance_llm)
 
     def assemble(self, extraction: MemoryExtraction, context: AssemblyContext) -> tuple[
         list[MemoryNode],
@@ -105,7 +105,7 @@ class GraphAssembler:
         if existing is None:
             stored = self.store.get_nodes(context.namespace, [incoming.node_id])
             existing = stored[0] if stored else None
-        return merge_node(existing, incoming, context)
+        return self.maintenance.merge_node(existing, incoming, context)
 
     def _alias_entries(self, namespace: str, nodes: list[MemoryNode]) -> list[EntityAliasIndexEntry]:
         entries: list[EntityAliasIndexEntry] = []

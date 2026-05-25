@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from c_hypermem import Memory
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
@@ -123,6 +125,390 @@ def test_entity_label_nodes_reuse_existing_alias_entry(tmp_path):
     assert nodes[0].time.activation.updated_turn == 1
 
 
+def test_node_summary_maintenance_concatenates_sources_below_k_and_reindexes(tmp_path):
+    embedding_client = RecordingEmbeddingClient()
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "maintenance": {
+                "node_summary": {
+                    "compact_after_k_sources": 3,
+                    "max_tokens": 1000,
+                }
+            },
+        },
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload("Alice is the user."),
+                _single_entity_payload("Alice is preparing for interviews."),
+            ]
+        ),
+        embedding_client=embedding_client,
+        vector_store=vector_store,
+    )
+    namespace = "node_summary_concat_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I am Alice.", namespace=namespace)
+    memory.add_memory("I am preparing for interviews.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert node.summary == "Alice is the user.\nAlice is preparing for interviews."
+    summary_state = node.metadata["maintenance"]["node_summary"]
+    assert summary_state["summary_source_turn_ids"] == ["turn:0", "turn:1"]
+    assert summary_state["pending_source_turn_ids"] == ["turn:0", "turn:1"]
+    summary_records = [
+        record
+        for record in vector_store.records
+        if record.payload["item_type"] == "node_summary" and record.payload["node_id"] == node.node_id
+    ]
+    assert summary_records[-1].text == node.summary
+
+
+def test_node_summary_maintenance_compacts_at_k_sources(tmp_path):
+    maintenance_llm = MaintenanceLLM([{"summary": "Alice is a user preparing for interviews."}])
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "maintenance": {
+                "node_summary": {
+                    "compact_after_k_sources": 2,
+                    "max_tokens": 1000,
+                }
+            },
+        },
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload("Alice is the user."),
+                _single_entity_payload("Alice is preparing for interviews."),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "node_summary_compact_k_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I am Alice.", namespace=namespace)
+    memory.add_memory("I am preparing for interviews.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert node.summary == "Alice is a user preparing for interviews."
+    assert maintenance_llm.call_count == 1
+    assert "Alice is the user.\nAlice is preparing for interviews." in maintenance_llm.prompts[0]
+    assert "node_id" not in maintenance_llm.prompts[0]
+    summary_state = node.metadata["maintenance"]["node_summary"]
+    assert summary_state["pending_source_turn_ids"] == []
+    assert summary_state["compaction_count"] == 1
+    assert summary_state["last_compaction_trigger"]["reasons"] == ["source_count"]
+
+
+def test_node_summary_maintenance_compacts_at_token_limit_before_k(tmp_path):
+    maintenance_llm = MaintenanceLLM([{"summary": "Alice interview preference."}])
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "maintenance": {
+                "node_summary": {
+                    "compact_after_k_sources": 10,
+                    "max_tokens": 5,
+                }
+            },
+        },
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload("Alice prefers calm morning interview scheduling with detailed preparation notes."),
+                _single_entity_payload("Alice also wants short commute windows around interviews."),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "node_summary_compact_token_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I prefer calm morning interview scheduling with notes.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert node.summary == "Alice interview preference."
+    assert maintenance_llm.call_count == 1
+    assert node.metadata["maintenance"]["node_summary"]["last_compaction_trigger"]["reasons"] == ["token_limit"]
+
+
+def test_node_summary_compaction_requires_maintenance_llm(tmp_path):
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "maintenance": {
+                "node_summary": {
+                    "compact_after_k_sources": 1,
+                    "max_tokens": 1000,
+                }
+            },
+        },
+        extractor=SequenceHomogeneousExtractor([_single_entity_payload("Alice is the user.")]),
+    )
+    namespace = "node_summary_requires_llm_ns"
+    memory.reset(namespace)
+
+    with pytest.raises(RuntimeError, match="requires an LLM"):
+        memory.add_memory("I am Alice.", namespace=namespace)
+    memory.close()
+
+
+def test_local_triple_maintenance_keep_new_retires_existing_triple_and_reindexes(tmp_path):
+    maintenance_llm = MaintenanceLLM(
+        [
+            {
+                "decision": "keep_new",
+                "affected_existing_refs": ["existing:0"],
+                "merged_triple": None,
+                "rationale": "The new location replaces the old location.",
+            }
+        ]
+    )
+    embedding_client = RecordingEmbeddingClient()
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice lives in California.",
+                    triples=[{"subject": "Alice", "predicate": "lives_in", "object": "California"}],
+                ),
+                _single_entity_payload(
+                    "Alice lives in San Francisco.",
+                    triples=[{"subject": "Alice", "predicate": "lives_in", "object": "San Francisco"}],
+                ),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+        embedding_client=embedding_client,
+        vector_store=vector_store,
+    )
+    namespace = "local_triple_keep_new_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I live in California.", namespace=namespace)
+    memory.add_memory("I live in San Francisco.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert maintenance_llm.call_count == 1
+    assert "existing:0" in maintenance_llm.prompts[0]
+    triples = node.local_graph.triples
+    assert [(triple.object, triple.status) for triple in triples] == [
+        ("California", "retired"),
+        ("San Francisco", "active"),
+    ]
+    graph_records = [
+        record
+        for record in vector_store.records
+        if record.payload["item_type"] == "node_local_graph" and record.payload["node_id"] == node.node_id
+    ]
+    assert graph_records[-1].text.endswith("- Alice lives_in San Francisco")
+    assert "California" not in graph_records[-1].text
+
+
+def test_local_triple_maintenance_keep_existing_reindexes_active_graph_without_incoming(tmp_path):
+    maintenance_llm = MaintenanceLLM(
+        [
+            {
+                "decision": "keep_existing",
+                "affected_existing_refs": ["existing:0"],
+                "merged_triple": None,
+                "rationale": "The existing triple already covers the incoming triple.",
+            }
+        ]
+    )
+    embedding_client = RecordingEmbeddingClient()
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice likes tea.",
+                    triples=[{"subject": "Alice", "predicate": "likes", "object": "tea"}],
+                ),
+                _single_entity_payload(
+                    "Alice still likes tea.",
+                    triples=[{"subject": "Alice", "predicate": "likes", "object": "tea"}],
+                ),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+        embedding_client=embedding_client,
+        vector_store=vector_store,
+    )
+    namespace = "local_triple_keep_existing_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I like tea.", namespace=namespace)
+    memory.add_memory("I still like tea.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert maintenance_llm.call_count == 1
+    assert [(triple.object, triple.status) for triple in node.local_graph.triples] == [("tea", "active")]
+    graph_records = [
+        record
+        for record in vector_store.records
+        if record.payload["item_type"] == "node_local_graph" and record.payload["node_id"] == node.node_id
+    ]
+    assert graph_records[-1].text.endswith("- Alice likes tea")
+    assert len(graph_records) == 2
+
+
+def test_local_triple_maintenance_keep_both_preserves_compatible_values(tmp_path):
+    maintenance_llm = MaintenanceLLM(
+        [
+            {
+                "decision": "keep_both",
+                "affected_existing_refs": [],
+                "merged_triple": None,
+                "rationale": "Both preferences can coexist.",
+            }
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice likes tea.",
+                    triples=[{"subject": "Alice", "predicate": "likes", "object": "tea"}],
+                ),
+                _single_entity_payload(
+                    "Alice likes coffee.",
+                    triples=[{"subject": "Alice", "predicate": "likes", "object": "coffee"}],
+                ),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "local_triple_keep_both_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I like tea.", namespace=namespace)
+    memory.add_memory("I like coffee.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert [(triple.object, triple.status) for triple in node.local_graph.triples] == [
+        ("tea", "active"),
+        ("coffee", "active"),
+    ]
+
+
+def test_local_triple_maintenance_merge_replaces_candidates_with_merged_triple(tmp_path):
+    maintenance_llm = MaintenanceLLM(
+        [
+            {
+                "decision": "merge",
+                "affected_existing_refs": ["existing:0"],
+                "merged_triple": {
+                    "subject": "Alice",
+                    "predicate": "works_at",
+                    "object": "OpenAI in San Francisco",
+                    "qualifiers": {"specificity": "city"},
+                },
+                "rationale": "The new triple is a more specific version.",
+            }
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice works at OpenAI.",
+                    triples=[{"subject": "Alice", "predicate": "works_at", "object": "OpenAI"}],
+                ),
+                _single_entity_payload(
+                    "Alice works at OpenAI in San Francisco.",
+                    triples=[{"subject": "Alice", "predicate": "works_at", "object": "OpenAI in San Francisco"}],
+                ),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "local_triple_merge_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I work at OpenAI.", namespace=namespace)
+    memory.add_memory("I work at OpenAI in San Francisco.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert [(triple.object, triple.status) for triple in node.local_graph.triples] == [
+        ("OpenAI", "retired"),
+        ("OpenAI in San Francisco", "active"),
+    ]
+    assert node.local_graph.triples[1].qualifiers["specificity"] == "city"
+
+
+def test_local_triple_maintenance_requires_llm_for_same_subject_predicate(tmp_path):
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice lives in California.",
+                    triples=[{"subject": "Alice", "predicate": "lives_in", "object": "California"}],
+                ),
+                _single_entity_payload(
+                    "Alice lives in San Francisco.",
+                    triples=[{"subject": "Alice", "predicate": "lives_in", "object": "San Francisco"}],
+                ),
+            ]
+        ),
+    )
+    namespace = "local_triple_requires_llm_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I live in California.", namespace=namespace)
+    with pytest.raises(RuntimeError, match="requires an LLM"):
+        memory.add_memory("I live in San Francisco.", namespace=namespace)
+    memory.close()
+
+
+def test_local_triple_maintenance_does_not_call_llm_for_different_predicate(tmp_path):
+    maintenance_llm = MaintenanceLLM([])
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice likes tea.",
+                    triples=[{"subject": "Alice", "predicate": "likes", "object": "tea"}],
+                ),
+                _single_entity_payload(
+                    "Alice lives in California.",
+                    triples=[{"subject": "Alice", "predicate": "lives_in", "object": "California"}],
+                ),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "local_triple_no_overlap_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I like tea.", namespace=namespace)
+    memory.add_memory("I live in California.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert maintenance_llm.call_count == 0
+    assert [(triple.predicate, triple.object, triple.status) for triple in node.local_graph.triples] == [
+        ("likes", "tea", "active"),
+        ("lives_in", "California", "active"),
+    ]
+
+
 def test_vector_indexing_uses_node_local_graph_and_hyper_edge_description(tmp_path):
     embedding_client = RecordingEmbeddingClient()
     vector_store = RecordingVectorStore()
@@ -228,6 +614,39 @@ class SequenceHomogeneousExtractor:
         payload = self.payloads[self.index]
         self.index += 1
         return MemoryExtraction.model_validate(payload)
+
+
+def _single_entity_payload(summary, *, triples=None):
+    return {
+        "edge_summaries": [{"ref": "e1", "description": "Alice profile."}],
+        "nodes": [
+            {
+                "ref": "n1",
+                "labels": ["entity", "person"],
+                "canonical_text": "Alice",
+                "summaries": [summary],
+                "triples": triples or [],
+                "edge_summary_refs": ["e1"],
+                "metadata": {"aliases": ["Alice"]},
+            }
+        ],
+    }
+
+
+class MaintenanceLLM:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.prompts = []
+
+    @property
+    def call_count(self):
+        return len(self.prompts)
+
+    def generate_json(self, prompt):
+        self.prompts.append(prompt)
+        if not self.payloads:
+            raise AssertionError("Unexpected maintenance LLM call")
+        return self.payloads.pop(0)
 
 
 class RecordingEmbeddingClient:

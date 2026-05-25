@@ -310,7 +310,7 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
 | 3 | NodeBuilder 与 LocalGraphBuilder 重构 | 已完成 | 统一 `build_node`，删除按 label 写死 triples 的主路径。 | `node_builder.py`, `local_graph_builder.py` |
 | 4 | GraphAssembler 重构 | 已完成 | 按 refs 组装 nodes 和 HyperEdges，并从 context.turn_ids 写入系统来源 metadata。 | `assembly.py`, `node_builder.py`, `hyperedge_builder.py` |
 | 5 | 存储与索引调整 | 已完成 | 新写入不依赖 polarity/roles；来源回溯依赖系统注入的 `source_turn_ids`。 | `sqlite_store.py`, `vector_store.py` |
-| 6 | 维护逻辑泛化 | 未开始 | fact merge/conflict 泛化为 memory node merge/conflict。 | `maintenance.py`, maintenance prompts |
+| 6 | 维护逻辑泛化 | 部分完成 | Node summary 与 LocalTriple 维护已接入；memory node merge/conflict、description-only edge maintenance 仍待补齐。 | `maintenance.py`, maintenance prompts |
 | 7 | 检索适配 | 未开始 | 检索不依赖 edge_type/relation/roles，消费 description-only edge。 | `retrieval/*.py` |
 | 8 | 配置收敛 | 未开始 | node label policy 与 inferred metadata 配置落地。 | `config.py`, `configs/*.yaml` |
 | 9 | 测试和示例迁移 | 未开始 | 删除旧断言，补齐新结构测试。 | `tests/test_memory.py`, `examples/*.py` |
@@ -346,8 +346,11 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
 - 已完成：`NodeBuilder.build_node()` 消费 `ExtractedNode`，`LocalGraphBuilder` 只规范化和去重 node 内 triples，不再按 event/fact/entity 写死 triples。
 - 已完成：`GraphAssembler` 按 `edge_summary_refs` 反向组装 description-only HyperEdge，并从 `context.metadata.turn_ids` 写入 MemoryNode / HyperEdge metadata 的 `source_turn_ids`。
 - 已删除：`ExtractedSource`、`ExtractedEntity`、`ExtractedEvent`、`EventParticipant`、`ExtractedAssertion`。
-- 已删除：旧 `entity_resolution.py` 和旧 fact-oriented `GraphMaintenance` 主体。当前 `GraphMaintenance` 只保留新写入路径的 post-assembly hook。
+- 已删除：旧 `entity_resolution.py` 和旧 fact-oriented `GraphMaintenance` 主体。当前 `GraphMaintenance` 已作为同构节点维护组件接入 node merge。
 - 已完成：存储与索引调整。SQLite 新 schema 不再创建旧 `edge_type/relation/polarity/role/role_in_edge/edge_relation/fact_property_index` 路径；向量 payload 清理旧 edge role 字段，turn dialogue payload 使用 `dialogue_roles`。
-- 未开始：维护逻辑泛化、旧测试迁移、示例迁移。
+- 已完成：移除旧 fact/property/typed-edge 维护 prompt 资源和 registry 入口，新增 `maintenance/node_summary_compaction.md` 与 `maintenance/local_triple_merge.md`。
+- 已完成：Node summary 维护第一阶段。同一 node 的不同来源 summary 在低于 `k` 时拼接；达到 `maintenance.node_summary.compact_after_k_sources` 或 token 上限时强触发 LLM 压缩；无维护 LLM 时显式失败。
+- 已完成：LocalTriple 维护第一阶段。同一 node 内先匹配 normalized S、再匹配 normalized P；S/P 相同即触发 LLM 路由，支持 keep_existing、keep_new、keep_both、merge、needs_review；无维护 LLM 时显式失败。
+- 未开始：memory node merge/conflict、description-only edge maintenance、旧测试迁移、示例迁移。
 
-下一步建议进入 **阶段 6：维护逻辑泛化**，将旧 fact/property/role/polarity prompt 泛化为统一 MemoryNode 和 description-only HyperEdge 维护。
+下一步建议继续 **阶段 6：维护逻辑泛化**，补齐统一 MemoryNode merge/conflict 与 description-only HyperEdge 维护。

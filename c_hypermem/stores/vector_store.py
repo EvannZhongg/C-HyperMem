@@ -262,7 +262,7 @@ def node_local_graph_embedding_text(node: MemoryNode) -> str:
     if content:
         lines.append(content)
 
-    triples = [triple for triple in node.local_graph.triples if triple.triple_id is not None]
+    triples = [triple for triple in node.local_graph.triples if triple.triple_id is not None and triple.status == "active"]
     for triple in triples:
         text = triple_embedding_text(triple)
         if text:
@@ -276,7 +276,11 @@ def collect_node_local_graph_index_items(nodes: Sequence[MemoryNode]) -> list[No
     for node in nodes:
         if not node.local_graph.triples:
             continue
-        triples = [triple for triple in node.local_graph.triples if triple.triple_id is not None]
+        triples = [
+            triple
+            for triple in node.local_graph.triples
+            if triple.triple_id is not None and triple.status == "active"
+        ]
         if not triples:
             continue
         text = node_local_graph_embedding_text(node)

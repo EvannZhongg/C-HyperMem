@@ -862,6 +862,7 @@ def _local_graph_fts_text(node: MemoryNode) -> str:
     return " ".join(
         f"{triple.subject} {triple.predicate} {triple.object}"
         for triple in node.local_graph.triples
+        if triple.status == "active"
     )
 
 

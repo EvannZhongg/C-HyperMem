@@ -212,7 +212,12 @@ def test_llm_memory_extractor_prompt_and_parser_use_nodes_and_edge_summaries():
     assert "`nodes`: The only carrier for memory objects" in llm.prompts[0]
     assert "third-party observer" in llm.prompts[0]
     assert "not only about the User, but also about the Assistant" in llm.prompts[0]
-    assert '"canonical_text": "User"' in llm.prompts[0]
+    assert '{"subject": "User", "predicate": "prefers", "object": "morning interviews"}' in llm.prompts[0]
+    assert (
+        '{"subject": "Assistant", "predicate": "will_set_reminder_for", "object": "morning interview"}'
+        in llm.prompts[0]
+    )
+    assert '{"subject": "morning interview", "predicate": "has_reminder", "object": "calendar reminder"}' in llm.prompts[0]
     assert '"entities", "events", "assertions"' not in llm.prompts[0]
 
 

@@ -533,7 +533,7 @@ class LocalTripleMergeTask:
 
 
 class MergedTriplePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     subject: str
     predicate: str

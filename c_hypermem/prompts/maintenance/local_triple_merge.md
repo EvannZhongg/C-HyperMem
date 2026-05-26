@@ -43,6 +43,9 @@ handled semantically.
 - For `keep_existing`, `keep_new`, and `merge`, include the affected existing
   refs.
 - For `merge`, provide a complete `merged_triple` object.
+- `merged_triple` may contain only `subject`, `predicate`, `object`, and
+  `qualifiers`; do not include system-owned fields such as `status`, `triple_id`,
+  source metadata, timestamps, or confidence scores.
 
 # Node Context
 

@@ -1155,6 +1155,8 @@ def test_local_triple_maintenance_merge_replaces_candidates_with_merged_triple(t
                             "predicate": "works_at",
                             "object": "OpenAI in San Francisco",
                             "qualifiers": {"specificity": "city"},
+                            "status": "active",
+                            "triple_id": "llm-owned-id-should-be-ignored",
                         },
                         "rationale": "The new triple is a more specific version.",
                     }
@@ -1191,6 +1193,8 @@ def test_local_triple_maintenance_merge_replaces_candidates_with_merged_triple(t
         ("OpenAI in San Francisco", "active"),
     ]
     assert node.local_graph.triples[1].qualifiers["specificity"] == "city"
+    assert "status" not in node.local_graph.triples[1].qualifiers
+    assert node.local_graph.triples[1].triple_id != "llm-owned-id-should-be-ignored"
     assert node.local_graph.triples[0].superseded_by == node.local_graph.triples[1].triple_id
     merged_from_ids = node.local_graph.triples[1].qualifiers["maintenance_merged_triple_ids"]
     assert merged_from_ids[0] == node.local_graph.triples[0].triple_id

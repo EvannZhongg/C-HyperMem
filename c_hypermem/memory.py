@@ -279,6 +279,12 @@ class Memory:
                 store.delete(unique_ids)
 
     def _index_nodes_edges_and_clusters(self, nodes: list[Any], edges: list[Any], clusters: list[Any]) -> None:
+        node_local_graph_items = [
+            item
+            for item in collect_node_local_graph_index_items(nodes)
+            if item.payload.get("node_status") == "active"
+        ]
+        self._delete_empty_node_local_graph_vectors(nodes, node_local_graph_items)
         self._index_items(
             "node_content",
             [
@@ -289,11 +295,7 @@ class Memory:
         )
         self._index_items(
             "node_local_graph",
-            [
-                item
-                for item in collect_node_local_graph_index_items(nodes)
-                if item.payload.get("node_status") == "active"
-            ],
+            node_local_graph_items,
         )
         self._index_items(
             "hyper_edge_description",
@@ -319,6 +321,20 @@ class Memory:
                 if item.payload.get("status") == "active"
             ],
         )
+
+    def _delete_empty_node_local_graph_vectors(self, nodes: list[Any], items: list[VectorIndexItem]) -> None:
+        node_local_graph_store = self.vector_stores.get("node_local_graph") or self.vector_store
+        if node_local_graph_store is None:
+            return
+        indexed_ids = {str(item.payload.get("node_id")) for item in items if item.payload.get("node_id")}
+        stale_ids = [
+            make_vector_point_id(node.namespace, "node_local_graph", node.node_id)
+            for node in nodes
+            if getattr(node, "status", None) == "active" and node.node_id not in indexed_ids
+        ]
+        stale_ids = list(dict.fromkeys(stale_ids))
+        if stale_ids:
+            node_local_graph_store.delete(stale_ids)
 
     def _index_turn_dialogue(
         self,

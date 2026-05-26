@@ -9,7 +9,7 @@ from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
 from c_hypermem.pipeline.node_builder import NodeBuilder
 from c_hypermem.stores.vector_store import VectorSearchHit, make_vector_point_id, node_local_graph_embedding_text
-from c_hypermem.schema import ExtractedNode, MemoryExtraction
+from c_hypermem.schema import ExtractedNode, LocalNodeGraph, LocalTriple, MemoryExtraction, MemoryNode
 
 
 def test_node_builder_builds_homogeneous_node_from_extracted_node():
@@ -1289,6 +1289,41 @@ def test_vector_indexing_uses_node_local_graph_and_hyper_edge_description(tmp_pa
     ]
     assert {record.text for record in edge_records} == edge_descriptions
     assert {record.payload["edge_id"] for record in edge_records} == {edge.edge_id for edge in edges}
+
+
+def test_empty_active_local_graph_deletes_stale_node_local_graph_vector(tmp_path):
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        embedding_client=RecordingEmbeddingClient(),
+        vector_store=vector_store,
+    )
+    namespace = "empty_local_graph_vector_ns"
+    node = MemoryNode(
+        node_id="node:empty-local-graph",
+        namespace=namespace,
+        canonical_text="Alice",
+        normalized_text="alice",
+        fingerprint="sha256:alice",
+        content="Alice",
+        local_graph=LocalNodeGraph(
+            triples=[
+                LocalTriple(
+                    triple_id="triple:retired",
+                    subject="Alice",
+                    predicate="likes",
+                    object="tea",
+                    status="retired",
+                )
+            ]
+        ),
+    )
+
+    memory._index_nodes_edges_and_clusters([node], [], [])
+    memory.close()
+
+    assert make_vector_point_id(namespace, "node_local_graph", node.node_id) in vector_store.deleted_ids
+    assert all(record.payload["item_type"] != "node_local_graph" for record in vector_store.records)
 
 
 def test_vector_retrieval_uses_separate_node_rrf_channels(tmp_path):

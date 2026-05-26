@@ -158,7 +158,7 @@ maintenance:
   - Alice prefers morning interviews
   ```
 
-  payload 中仍保留 `node_id/triple_ids/triple_count/triples/attributes/node_metadata`，其中每条 triple 的 edge scope 使用 `scope_edge_ids` 列表。当一个 node 后续新增或更新 triples 时，会用同一个 `node_id` 生成的向量点 ID 覆盖更新该 node 的 local graph 向量；该向量可以被该 node 内每个 triple 通过 payload 中的 `triple_ids` 回指。
+  payload 中仍保留 `node_id/triple_ids/triple_count/triples/attributes/node_metadata`，其中每条 triple 的 edge scope 使用 `scope_edge_ids` 列表。当一个 node 后续新增或更新 triples 时，会用同一个 `node_id` 生成的向量点 ID 覆盖更新该 node 的 local graph 向量；该向量可以被该 node 内每个 triple 通过 payload 中的 `triple_ids` 回指。如果更新后的 active node 已没有可索引 active triples，写入闭环会显式删除该 node 的 `node_local_graph` 向量点，避免旧 local graph 向量滞留。
 - `node_content` 向量：索引 `MemoryNode.content` 与 `MemoryNode.summary` 的拼接文本，payload 中保留 `node_id/node_labels/status/time/metadata` 等信息。当前不再创建独立 `node_summary` 向量 collection。
 - `hyper_edge_description` 向量：索引每条具体 `HyperEdge.description`，payload 中保留 `edge_id/edge_fingerprint/node_ids/member_signature/time/metadata` 等信息。
 - `edge_cluster_canonical` 向量：索引 `EdgeCluster.canonical_description`，payload 中保留 `cluster_id/cluster_labels/conflict_state` 等信息。

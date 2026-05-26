@@ -35,6 +35,11 @@ class GraphRippleExpansion:
         by_node_id = {item.node.node_id: item for item in initial}
         seed_scores = {item.node.node_id: item.score for item in seeds}
         seed_ids = set(seed_scores)
+        coherence_seed_ids = {
+            item.node.node_id
+            for item in seeds
+            if item.channels.intersection({"lexical", "node_content", "node_local_graph"})
+        }
 
         incident_edges = self.store.get_incident_edges(namespace, list(seed_ids))
         cluster_edges, clusters_by_edge, cluster_descriptions_by_edge = self._cluster_edges(namespace, incident_edges)
@@ -47,6 +52,7 @@ class GraphRippleExpansion:
 
         for edge in incident_edges:
             hit_node_ids = seed_ids.intersection(edge.node_ids)
+            coherence_hit_node_ids = coherence_seed_ids.intersection(edge.node_ids)
             hit_ids_by_edge[edge.edge_id] = hit_node_ids
             clusters = clusters_by_edge.get(edge.edge_id, [])
             clusters_by_edge_id[edge.edge_id] = clusters
@@ -55,13 +61,14 @@ class GraphRippleExpansion:
                 by_node_id=by_node_id,
                 nodes_by_id=nodes_by_id,
                 seed_scores=seed_scores,
-                hit_node_ids=hit_node_ids,
+                coherence_hit_node_ids=coherence_hit_node_ids,
                 clusters=clusters,
             )
-            coherence_by_edge[edge.edge_id] = self._edge_coherence(hit_node_ids, seed_scores)
+            coherence_by_edge[edge.edge_id] = self._edge_coherence(coherence_hit_node_ids, seed_scores)
 
         for edge in cluster_edges:
             hit_node_ids = seed_ids.intersection(edge.node_ids)
+            coherence_hit_node_ids = coherence_seed_ids.intersection(edge.node_ids)
             hit_ids_by_edge[edge.edge_id] = hit_node_ids
             clusters = clusters_by_edge.get(edge.edge_id, [])
             clusters_by_edge_id[edge.edge_id] = clusters
@@ -70,10 +77,10 @@ class GraphRippleExpansion:
                 by_node_id=by_node_id,
                 nodes_by_id=nodes_by_id,
                 seed_scores=seed_scores,
-                hit_node_ids=hit_node_ids,
+                coherence_hit_node_ids=coherence_hit_node_ids,
                 clusters=clusters,
             )
-            coherence_by_edge[edge.edge_id] = self._edge_coherence(hit_node_ids, seed_scores)
+            coherence_by_edge[edge.edge_id] = self._edge_coherence(coherence_hit_node_ids, seed_scores)
 
         return self._rank_edges(
             edges=list(edges_by_id.values()),
@@ -91,10 +98,10 @@ class GraphRippleExpansion:
         by_node_id: dict[str, FusedNode],
         nodes_by_id: dict[str, MemoryNode],
         seed_scores: dict[str, float],
-        hit_node_ids: set[str],
+        coherence_hit_node_ids: set[str],
         clusters: list[EdgeCluster],
     ) -> None:
-        coherence = self._edge_coherence(hit_node_ids, seed_scores)
+        coherence = self._edge_coherence(coherence_hit_node_ids, seed_scores)
         for node_id in edge.node_ids:
             node = nodes_by_id.get(node_id)
             if node is None or node.status != "active":
@@ -195,6 +202,7 @@ class GraphRippleExpansion:
                 "edge_member_max": score,
                 "edge_member_avg": sum(member_scores) / len(member_scores),
             }
+            score_parts.update(_member_score_part_max(nodes))
             coherence = coherence_by_edge.get(edge.edge_id, 0.0)
             if coherence > 0:
                 score_parts["edge_coherence"] = coherence
@@ -248,3 +256,11 @@ def _cluster_edge_descriptions(
                 payloads.append(payload)
         descriptions_by_edge[edge_id] = payloads
     return descriptions_by_edge
+
+
+def _member_score_part_max(nodes: list[FusedNode]) -> dict[str, float]:
+    score_parts: dict[str, float] = {}
+    for node in nodes:
+        for key, value in node.score_parts.items():
+            score_parts[key] = max(score_parts.get(key, float("-inf")), value)
+    return score_parts

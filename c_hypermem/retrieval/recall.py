@@ -3,12 +3,12 @@ from __future__ import annotations
 from c_hypermem.config import NLPConfig, RetrievalConfig
 from c_hypermem.embeddings import EmbeddingClient
 from c_hypermem.llms.base import LLMClient
-from c_hypermem.retrieval.fusion import FusedNode, RankedNodeList, reciprocal_rank_fusion_channels
+from c_hypermem.retrieval.fusion import FusedNode, RankedNodeEntry, RankedNodeList, reciprocal_rank_fusion_channels
 from c_hypermem.retrieval.graph_ripple import GraphRippleExpansion, RankedEdge
 from c_hypermem.retrieval.lexical_recall import SQLiteFTSRecall
 from c_hypermem.retrieval.query_analysis import build_query_analyzer
 from c_hypermem.retrieval.vector_recall import DenseVectorRecall, VectorEdgeHit
-from c_hypermem.schema import HyperEdge, MemoryNode, SearchResult
+from c_hypermem.schema import MemoryNode, SearchResult
 from c_hypermem.stores.base import MemoryStore
 from c_hypermem.stores.vector_store import VectorStore
 
@@ -97,72 +97,63 @@ class Retriever:
                     score_key=f"rrf_{channel}",
                 )
             )
+        ranked_lists.append(self._hyper_edge_description_channel(namespace, edge_hits))
 
         fused = reciprocal_rank_fusion_channels(
             ranked_lists=ranked_lists,
             vector_hit_payloads=vector_hits_by_node,
             k=max(1, self.config.rrf_k),
         )
-        node_ranked_edges = self.graph_ripple.expand(namespace=namespace, initial=fused)
-        description_ranked_edges = self._rank_description_hit_edges(namespace, edge_hits)
-        ranked_edges = self._merge_ranked_edges(node_ranked_edges, description_ranked_edges)
+        ranked_edges = self.graph_ripple.expand(namespace=namespace, initial=fused)
 
         limit = min(top_k, self.config.final_top_k)
         return [self._to_result(item, analysis_metadata=analysis.to_metadata()) for item in ranked_edges[:limit]]
 
-    def _rank_description_hit_edges(self, namespace: str, edge_hits: list[VectorEdgeHit]) -> list[RankedEdge]:
+    def _hyper_edge_description_channel(
+        self,
+        namespace: str,
+        edge_hits: list[VectorEdgeHit],
+    ) -> RankedNodeList:
+        channel = "hyper_edge_description_vector"
+        score_key = f"rrf_{channel}"
         if not edge_hits:
-            return []
+            return RankedNodeList(nodes=[], channel=channel, score_key=score_key, entries=[])
         edges = self.store.get_edges(namespace, list(dict.fromkeys(hit.edge_id for hit in edge_hits)))
         edges_by_id = {edge.edge_id: edge for edge in edges if edge.status == "active"}
         nodes_by_id = self._nodes_for_edges(namespace, edges_by_id.values())
 
-        ranked: list[RankedEdge] = []
+        entries: list[RankedNodeEntry] = []
         seen_edge_ids: set[str] = set()
         for rank, hit in enumerate(edge_hits, start=1):
             edge = edges_by_id.get(hit.edge_id)
             if edge is None or edge.edge_id in seen_edge_ids:
                 continue
             seen_edge_ids.add(edge.edge_id)
-            score = 1.0 / (max(1, self.config.rrf_k) + rank)
-            nodes = [
-                FusedNode(
-                    node=node,
-                    score=score,
-                    channels={"hyper_edge_description_vector"},
-                    score_parts={"rrf_hyper_edge_description_vector": score},
-                    vector_hits=[
-                        {
-                            "channel": hit.channel,
-                            "score": hit.score,
-                            "id": hit.hit.id,
-                            "text": hit.hit.text,
-                            "payload": hit.hit.payload,
-                        }
-                    ],
-                    edge_ids={edge.edge_id},
-                    cluster_ids=set(),
+            vector_hit = {
+                "channel": hit.channel,
+                "score": hit.score,
+                "id": hit.hit.id,
+                "text": hit.hit.text,
+                "payload": hit.hit.payload,
+            }
+            for node_id in edge.node_ids:
+                node = nodes_by_id.get(node_id)
+                if node is None or node.status != "active":
+                    continue
+                entries.append(
+                    RankedNodeEntry(
+                        node=node,
+                        rank=rank,
+                        vector_hits=[
+                            {
+                                **vector_hit,
+                                "projected_edge_id": edge.edge_id,
+                            }
+                        ],
+                        edge_ids={edge.edge_id},
+                    )
                 )
-                for node_id in edge.node_ids
-                if (node := nodes_by_id.get(node_id)) is not None and node.status == "active"
-            ]
-            if not nodes:
-                continue
-            ranked.append(
-                RankedEdge(
-                    edge=edge,
-                    score=score,
-                    nodes=nodes,
-                    score_parts={
-                        "hyper_edge_description_vector": score,
-                        "rrf_hyper_edge_description_vector": score,
-                    },
-                    cluster_ids=set(),
-                    cluster_edge_descriptions=[],
-                    hit_node_ids=set(),
-                )
-            )
-        return ranked
+        return RankedNodeList(nodes=[], channel=channel, score_key=score_key, entries=entries)
 
     def _nodes_for_edges(self, namespace: str, edges) -> dict[str, MemoryNode]:
         node_ids: list[str] = []
@@ -172,27 +163,6 @@ class Retriever:
             node.node_id: node
             for node in self.store.get_nodes(namespace, list(dict.fromkeys(node_ids)))
         }
-
-    def _merge_ranked_edges(
-        self,
-        node_ranked_edges: list[RankedEdge],
-        description_ranked_edges: list[RankedEdge],
-    ) -> list[RankedEdge]:
-        merged: dict[str, RankedEdge] = {}
-        for item in [*node_ranked_edges, *description_ranked_edges]:
-            existing = merged.get(item.edge.edge_id)
-            if existing is None:
-                merged[item.edge.edge_id] = item
-                continue
-            existing.score = max(existing.score, item.score)
-            existing.score_parts = {**existing.score_parts, **item.score_parts}
-            existing.cluster_ids.update(item.cluster_ids)
-            existing.hit_node_ids.update(item.hit_node_ids)
-            existing.cluster_edge_descriptions = _unique_edge_description_payloads(
-                [*existing.cluster_edge_descriptions, *item.cluster_edge_descriptions]
-            )
-            existing.nodes = _merge_fused_nodes(existing.nodes, item.nodes)
-        return sorted(merged.values(), key=lambda item: item.score, reverse=True)
 
     def _to_result(self, ranked_edge: RankedEdge, *, analysis_metadata: dict) -> SearchResult:
         edge = ranked_edge.edge
@@ -244,43 +214,3 @@ class Retriever:
         edge = ranked_edge.edge
         node_lines = "\n".join(f"- {item.node.content}" for item in ranked_edge.nodes)
         return f"{edge.description}\nNodes:\n{node_lines}"
-
-
-def _merge_fused_nodes(left: list[FusedNode], right: list[FusedNode]) -> list[FusedNode]:
-    merged: dict[str, FusedNode] = {item.node.node_id: item for item in left}
-    for item in right:
-        existing = merged.get(item.node.node_id)
-        if existing is None:
-            merged[item.node.node_id] = item
-            continue
-        existing.score = max(existing.score, item.score)
-        existing.channels.update(item.channels)
-        existing.score_parts = {**existing.score_parts, **item.score_parts}
-        existing.vector_hits = _unique_vector_hits([*existing.vector_hits, *item.vector_hits])
-        existing.edge_ids.update(item.edge_ids)
-        existing.cluster_ids.update(item.cluster_ids)
-    return sorted(merged.values(), key=lambda node: node.score, reverse=True)
-
-
-def _unique_vector_hits(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    seen: set[tuple[object, object]] = set()
-    unique: list[dict[str, object]] = []
-    for item in items:
-        key = (item.get("channel"), item.get("id"))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
-
-
-def _unique_edge_description_payloads(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    seen: set[tuple[object, object, object]] = set()
-    unique: list[dict[str, object]] = []
-    for item in items:
-        key = (item.get("cluster_id"), item.get("edge_id"), item.get("description"))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique

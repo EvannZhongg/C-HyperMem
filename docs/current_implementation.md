@@ -179,18 +179,19 @@ Memory.search(query, namespace)
      -> DenseVectorRecall.recall(...)
         - node_content top 20
         - node_local_graph top 20
+     -> DenseVectorRecall.recall_hyper_edges(...)
+        - hyper_edge_description top 10
+        - 每条命中 edge 的排名投影到其全部 active member nodes
      -> SQLiteFTSRecall.recall(...)
         - SQLite FTS top 30
      -> reciprocal_rank_fusion_channels(...)
-        - lexical / node_content / node_local_graph 分通道 RRF
+        - lexical / node_content / node_local_graph / hyper_edge_description 四通道统一 RRF
+        - 同一 node 位于多条命中 edge 时，只取最佳 description rank 贡献，保留全部命中 payload
      -> GraphRippleExpansion.expand(...)
         - RRF top 80 作为图谱种子
         - seed node -> incident HyperEdge -> edge 内 active nodes
         - incident HyperEdge -> EdgeCluster -> sibling edge descriptions 和 sibling edge nodes
         - 同一 HyperEdge 内 2+ seed hits 时计算 edge_coherence
-     -> DenseVectorRecall.recall_hyper_edges(...)
-        - hyper_edge_description top 10
-     -> merge node-derived HyperEdge candidates and description-derived HyperEdge candidates
      -> final top 10 HyperEdge
      -> SearchResult(edge, edge_nodes)
 ```
@@ -199,7 +200,7 @@ Memory.search(query, namespace)
 
 - `retrieval/lexical_recall.py`：封装 SQLite FTS 词法召回。当前 FTS 表为 `nodes_fts`，索引 `content/summary/local_graph`，namespace 和 node_id 作为非全文索引字段保存。
 - `retrieval/vector_recall.py`：封装 node_content、node_local_graph 和 hyper_edge_description 向量召回。node 向量命中必须通过 payload 的 `node_id` 回 SQLite canonical store 读取 active `MemoryNode`；HyperEdge description 向量命中必须通过 payload 的 `edge_id` 回 SQLite canonical store 读取 active `HyperEdge`。
-- `retrieval/fusion.py`：封装 Reciprocal Rank Fusion。RRF 常数由 `retrieval.rrf_k` 配置，默认 `60`。
+- `retrieval/fusion.py`：封装 Reciprocal Rank Fusion。RRF 常数由 `retrieval.rrf_k` 配置，默认 `60`；对 HyperEdge description 排名向成员节点的投影按 node 取最佳 edge rank，使该通道对单节点最多贡献一次 RRF 分数。
 - `retrieval/graph_ripple.py`：封装图谱层涟漪扩散和 edge-centered ranking。
 - `stores/vector_store.py`：`VectorStore` 已增加 `search(...)` 协议，`QdrantVectorStore.search(...)` 使用 `query_points`。
 - `stores/sqlite_store.py`：新增 `nodes_fts` 和 `search_nodes_fts(...)`；新增 `get_edges(...)` 以支持 EdgeCluster sibling edges 回表。
@@ -229,7 +230,7 @@ S_coherence(E) =
   alpha * max(0, N_hit - 1) ** beta * S_base_avg
 ```
 
-其中 `N_hit` 是 RRF 初始候选池中属于同一 HyperEdge 的 seed node 数量。`N_hit <= 1` 时不加分；`N_hit >= 2` 时把分数写入 edge-level `score_parts.edge_coherence`，同时 edge 内成员 node 的 `score_parts.edge_coherence` 也会记录该结构化加分。
+其中 `N_hit` 是 RRF 初始候选池中属于同一 HyperEdge、且由 lexical / node_content / node_local_graph 独立召回命中的 seed node 数量。HyperEdge description 命中投影出的成员节点获得基础 RRF 分，但投影本身不计为多个独立 coherence hit，避免一次 edge 命中随成员数额外放大。`N_hit <= 1` 时不加分；`N_hit >= 2` 时把分数写入 edge-level `score_parts.edge_coherence`，同时 edge 内成员 node 的 `score_parts.edge_coherence` 也会记录该结构化加分。
 
 SearchResult 当前结构要点：
 
@@ -309,7 +310,7 @@ SearchResult 当前结构要点：
 
 - **检索增强**
   设计方向：lexical + vector + hyperedge + edge cluster + temporal + rerank。
-  当前方案：检索侧已接入 SQLite FTS + node_content（content + summary 拼接）/node-local-graph 分通道 RRF，通过 HyperEdge / EdgeCluster 涟漪扩散得到 node-derived HyperEdge 候选；同时接入 HyperEdge description 向量召回得到 description-derived HyperEdge 候选；最终合并两组候选并返回 top K 条 HyperEdge 及其成员 nodes。EdgeCluster canonical / variant 向量召回、turn_dialogue 召回、entity alias recall、temporal filter 和 LLM rerank 暂未接入。
+  当前方案：检索侧已接入 SQLite FTS、node_content（content + summary 拼接）、node-local-graph 与 HyperEdge description 四个排名通道。HyperEdge description 的 edge rank 先投影到其 active member nodes，每个 node 仅使用所属命中 edge 中的最佳 rank 作为该通道分数，再与三个 node 通道统一进入 RRF；RRF nodes 通过 HyperEdge / EdgeCluster 涟漪扩散并返回 top K 条 HyperEdge 及其成员 nodes，不再合并两套独立打分候选。EdgeCluster canonical / variant 向量召回、turn_dialogue 召回、entity alias recall、temporal filter 和 LLM rerank 暂未接入。
   原因：先完成 query_analysis=false 下的可解释混合召回和 edge-centered 返回，再逐步增加更多召回通道，避免把 query analysis、rerank 和多跳召回同时引入。
 
 - **事件驱动增量抽取**
@@ -384,8 +385,8 @@ SearchResult 当前结构要点：
 - EdgeCluster 当前作为确定性锚点聚合视图，多个 sibling edges 会追加到 shared-node 或 semantic-anchor cluster。
 - SQLite FTS 召回通过 `nodes_fts` 检索 `content/summary/local_graph`。
 - node_content、node-local-graph 两路向量召回接入检索主流程。
-- RRF 分通道融合 lexical、node_content vector 和 node-local-graph vector 初始结果。
-- HyperEdge description 向量召回可直接形成 HyperEdge 候选，并与 node-derived HyperEdge 候选合并。
+- RRF 分通道统一融合 lexical、node_content vector、node-local-graph vector 和投影到成员节点上的 HyperEdge description vector 初始结果；同一节点属于多条命中 edge 时仅使用最佳 description rank 贡献，使四个通道对单节点严格同幅。
+- HyperEdge description 向量召回不再独立形成后段 HyperEdge 候选或与 node-derived 候选硬合。
 - GraphRippleExpansion 根据 RRF 种子扩散到 HyperEdge 成员、EdgeCluster description variants 和 sibling edge nodes。
 - `edge_coherence` 在同一 HyperEdge 出现多个 seed hits 时产生非线性结构化加分。
 - `Memory.search()` 返回 top K 条 HyperEdge，每条 edge 的 `metadata.edge_nodes` 携带成员 nodes 和各 node 的 triples。

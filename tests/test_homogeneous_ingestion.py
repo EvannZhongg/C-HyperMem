@@ -1407,6 +1407,55 @@ def test_hyper_edge_description_vector_recall_returns_edge_candidate(tmp_path):
     assert results[0]["metadata"]["score_parts"]["rrf_hyper_edge_description_vector"] == 1 / 11
 
 
+def test_hyper_edge_description_channel_uses_best_projected_edge_rank_per_node(tmp_path):
+    embedding_client = RecordingEmbeddingClient()
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "retrieval": {"rrf_k": 10, "hyper_edge_description_vector_top_k": 2},
+        },
+        extractor=StaticHomogeneousExtractor(),
+        embedding_client=embedding_client,
+        vector_store=vector_store,
+    )
+    namespace = "projected_edge_rrf_max_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice prefers morning interviews.", namespace=namespace)
+    edge_records = [
+        record
+        for record in vector_store.records
+        if record.payload["item_type"] == "hyper_edge_description"
+    ]
+    vector_store.search_hits = [
+        VectorSearchHit(
+            id=record.id,
+            score=0.98 - index * 0.01,
+            payload=record.payload,
+            text=record.text,
+        )
+        for index, record in enumerate(edge_records)
+    ]
+
+    results = memory.search("opaque edge vector query", namespace=namespace, top_k=2)
+    memory.close()
+
+    preference_node = next(
+        node
+        for result in results
+        for node in result["metadata"]["edge_nodes"]
+        if node["content"] == "Alice prefers morning interviews."
+    )
+    assert preference_node["score_parts"]["rrf_hyper_edge_description_vector"] == pytest.approx(1 / 11)
+    assert {
+        hit["projected_edge_id"]
+        for hit in preference_node["matched_vector_items"]
+        if hit["channel"] == "hyper_edge_description_vector"
+    } == {record.payload["edge_id"] for record in edge_records}
+    assert all("edge_coherence" not in result["metadata"]["score_parts"] for result in results)
+
+
 def test_hyperedge_maintenance_reuses_same_member_set_and_reindexes_description(tmp_path):
     embedding_client = RecordingEmbeddingClient()
     vector_store = RecordingVectorStore()

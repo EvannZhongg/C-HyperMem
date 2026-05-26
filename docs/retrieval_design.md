@@ -30,19 +30,18 @@
 ```text
 Memory.search(query, namespace)
   -> query analysis
-  -> parallel node recall
+  -> parallel rank channels
      -> lexical node recall
      -> node_content vector recall
      -> node_local_graph vector recall
+     -> hyper_edge_description vector recall
+        -> each ranked HyperEdge projects its rank contribution to all active member nodes
   -> node-level fusion
-     -> Reciprocal Rank Fusion across lexical / node_content / node_local_graph
+     -> Reciprocal Rank Fusion across all four channels
   -> graph ripple expansion
      -> seed node -> incident HyperEdge -> all edge member nodes
      -> incident HyperEdge -> EdgeCluster -> sibling edges and description variants
      -> HyperEdge coherence scoring
-  -> parallel HyperEdge description vector recall
-     -> query -> hyper_edge_description vector index -> concrete HyperEdge candidates
-  -> merge node-derived HyperEdge candidates and description-derived HyperEdge candidates
   -> edge-level ranking
   -> final top-k HyperEdges, each carrying member nodes
 ```
@@ -55,7 +54,7 @@ Memory.search(query, namespace)
 - `node_local_graph`
 - `hyper_edge_description`
 
-node 向量命中必须通过 payload 中的 `node_id` 回到 SQLite canonical store 读取 `MemoryNode`。HyperEdge description 向量命中必须通过 payload 中的 `edge_id` 回到 SQLite canonical store 读取 `HyperEdge`。向量索引只作为可重建旁路索引，不作为权威数据源。
+node 向量命中必须通过 payload 中的 `node_id` 回到 SQLite canonical store 读取 `MemoryNode`。HyperEdge description 向量命中必须通过 payload 中的 `edge_id` 回到 SQLite canonical store 读取 `HyperEdge`，并读取其 active 成员 `MemoryNode`，把该 edge 的向量排名投影为这些节点的同量纲 RRF 贡献。向量索引只作为可重建旁路索引，不作为权威数据源。
 
 `node_content` 索引文本为 node content 与 node summary 的拼接；当 summary 拼接或压缩维护导致 `MemoryNode.summary` 更新时，写入闭环必须用同一个 node content vector point id 覆盖更新。
 
@@ -76,6 +75,8 @@ score(node) =
   1 / (rrf_k + rank_lexical)
   + 1 / (rrf_k + rank_node_content_vector)
   + 1 / (rrf_k + rank_node_local_graph_vector)
+  + max(1 / (rrf_k + rank_hyper_edge_description_vector(edge))
+        for each recalled edge containing node)
 ```
 
 其中：
@@ -83,13 +84,16 @@ score(node) =
 - `rank_lexical` 来自 SQLite FTS 结果排序。
 - `rank_node_content_vector` 来自 node content + summary 向量召回排序。
 - `rank_node_local_graph_vector` 来自 node local graph 向量召回排序。
+- `rank_hyper_edge_description_vector(edge)` 来自 HyperEdge description 向量召回排序；命中的 edge 将排名证据投影到其全部 active 成员节点，而节点只采用所属命中 edge 中的最佳排名贡献。
+- 若节点不属于任何被 HED 通道召回的 active HyperEdge，则该通道对节点的贡献为 `0`。
 - 如果某个节点只出现在一路召回中，只计算该路的 RRF 分数。
 
 每个 node 向量通道内部先按每个节点的最佳向量分数形成该通道排名，再与 lexical 排名做 RRF。
+HyperEdge description 通道按 node 聚合所属命中 edge：同一个节点若属于多条被召回的 HyperEdge，仅其排名最高的 edge 对该节点贡献一次 RRF 分数；所有匹配 edge payload 仍保留用于解释。由此第四通道与其他三个通道一样，对单个节点的基础分上限固定为 `1 / (rrf_k + 1)`。
 
 ## 图谱涟漪扩散
 
-RRF 之后，系统取 `graph_seed_top_k` 个高分 MemoryNode 作为图谱种子。
+统一四通道 RRF 之后，系统取 `graph_seed_top_k` 个高分 MemoryNode 作为图谱种子。因此 HyperEdge description 命中也通过投影后的节点进入同一扩散路径，不形成独立 edge 打分体系。
 
 扩散步骤：
 
@@ -123,6 +127,7 @@ S_coherence(E) =
 
 - `N_hit <= 1` 时，相干性加分为 0。
 - `N_hit >= 2` 时，相干性加分写入 `score_parts.edge_coherence`。
+- `N_hit` 只统计由 lexical / node content vector / node local graph vector 独立命中的 seed nodes。HyperEdge description 命中向成员节点的投影已经构成该通道的基础分，不因一次 edge 命中投影出多个成员而额外触发 coherence。
 - 相干性加分会加到该 HyperEdge 内所有 active 成员节点上，包括由图谱扩散新带出的节点。
 - EdgeCluster 带出的 sibling edge nodes 会进入候选池和 metadata；除非它们所属 HyperEdge 自身满足 2+ seed hits，否则不会凭空获得 `edge_coherence`。
 

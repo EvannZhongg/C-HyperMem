@@ -36,8 +36,9 @@ handled semantically.
   context.
 - Do not output system IDs, source references, storage keys, graph structures,
   scores, confidence, or chain-of-thought.
-- Return exactly one decision object per conflict, in the same order as the
-  provided conflict array.
+- Return exactly one JSON object with a `decisions` array containing one
+  decision object per conflict, in the same order as the provided conflict
+  array.
 - Use only caller-provided refs such as `existing:0`.
 - For `keep_existing`, `keep_new`, and `merge`, include the affected existing
   refs.

@@ -1091,6 +1091,51 @@ def test_local_triple_maintenance_keep_both_preserves_compatible_values(tmp_path
     assert node.local_graph.triples[1].qualifiers["maintenance_related_source_turn_ids"] == ["turn:0"]
 
 
+def test_local_triple_maintenance_accepts_decisions_object_response(tmp_path):
+    maintenance_llm = MaintenanceLLM(
+        [
+            {
+                "decisions": [
+                    {
+                        "decision": "keep_both",
+                        "affected_existing_refs": [],
+                        "merged_triple": None,
+                        "rationale": "Both preferences can coexist.",
+                    }
+                ]
+            }
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice likes tea.",
+                    triples=[{"subject": "Alice", "predicate": "likes", "object": "tea"}],
+                ),
+                _single_entity_payload(
+                    "Alice likes coffee.",
+                    triples=[{"subject": "Alice", "predicate": "likes", "object": "coffee"}],
+                ),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "local_triple_decisions_object_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I like tea.", namespace=namespace)
+    memory.add_memory("I like coffee.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert [(triple.object, triple.status) for triple in node.local_graph.triples] == [
+        ("tea", "active"),
+        ("coffee", "active"),
+    ]
+
+
 def test_local_triple_maintenance_merge_replaces_candidates_with_merged_triple(tmp_path):
     maintenance_llm = MaintenanceLLM(
         [

@@ -160,7 +160,7 @@ class GraphMaintenance:
     ) -> list["LocalTripleMergeDecision"]:
         prompt = self._render_local_triple_merge_prompt(node, tasks, context)
         payload = self.llm.generate_json(prompt)  # type: ignore[union-attr]
-        decisions = TypeAdapter(list[LocalTripleMergeDecision]).validate_python(payload)
+        decisions = _parse_local_triple_merge_decisions(payload)
         if len(decisions) != len(tasks):
             raise RuntimeError(
                 f"Local triple maintenance expected {len(tasks)} decisions but received {len(decisions)}."
@@ -257,11 +257,11 @@ class GraphMaintenance:
             "{{NODE_CONTEXT}}": _compact_json(node_context),
             "{{LOCAL_TRIPLE_CONFLICTS}}": _compact_json(conflicts),
             "{{STRICT_JSON_SHAPE}}": (
-                'Return exactly one JSON array with one decision object per conflict, in the same order: '
-                '[{"decision":"keep_existing|keep_new|keep_both|merge|needs_review",'
+                'Return exactly one JSON object with a decisions array containing one decision object per conflict, '
+                'in the same order: {"decisions":[{"decision":"keep_existing|keep_new|keep_both|merge|needs_review",'
                 '"affected_existing_refs":["existing:0"],'
                 '"merged_triple":{"subject":"...","predicate":"...","object":"...","qualifiers":{}},'
-                '"rationale":"Brief reason."}]. Use null for merged_triple unless decision is merge.'
+                '"rationale":"Brief reason."}]}. Use null for merged_triple unless decision is merge.'
             ),
         }
         rendered = prompt.text
@@ -548,6 +548,18 @@ class LocalTripleMergeDecision(BaseModel):
     affected_existing_refs: list[str] = Field(default_factory=list)
     merged_triple: MergedTriplePayload | None = None
     rationale: str = ""
+
+
+class LocalTripleMergeBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[LocalTripleMergeDecision]
+
+
+def _parse_local_triple_merge_decisions(payload: Any) -> list["LocalTripleMergeDecision"]:
+    if isinstance(payload, dict) and "decisions" in payload:
+        return LocalTripleMergeBatchResult.model_validate(payload).decisions
+    return TypeAdapter(list[LocalTripleMergeDecision]).validate_python(payload)
 
 
 class TokenCounter:

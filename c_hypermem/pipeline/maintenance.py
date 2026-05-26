@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from c_hypermem.config import MemoryConfig
 from c_hypermem.errors import ConfigError
@@ -94,7 +95,8 @@ class GraphMaintenance:
         context: AssemblyContext,
     ) -> None:
         _initialize_triple_provenance(incoming, context)
-        for incoming_triple in incoming.local_graph.triples:
+        merge_tasks: list[LocalTripleMergeTask] = []
+        for index, incoming_triple in enumerate(incoming.local_graph.triples):
             same_subject = [
                 triple
                 for triple in existing.local_graph.triples
@@ -116,8 +118,19 @@ class GraphMaintenance:
                 raise RuntimeError(
                     "Local triple maintenance found matching subject/predicate candidates and requires an LLM."
                 )
-            decision = self._decide_local_triple_merge(existing, incoming_triple, candidates, context)
-            self._apply_local_triple_decision(existing, incoming_triple, candidates, decision, context)
+            merge_tasks.append(
+                LocalTripleMergeTask(
+                    incoming_ref=f"incoming:{index}",
+                    incoming_triple=incoming_triple,
+                    candidates=candidates,
+                )
+            )
+
+        if not merge_tasks:
+            return
+        decisions = self._decide_local_triple_merges(existing, merge_tasks, context)
+        for task, decision in zip(merge_tasks, decisions, strict=True):
+            self._apply_local_triple_decision(existing, task.incoming_triple, task.candidates, decision, context)
 
     def _decide_local_triple_merge(
         self,
@@ -126,9 +139,33 @@ class GraphMaintenance:
         candidates: list[LocalTriple],
         context: AssemblyContext,
     ) -> "LocalTripleMergeDecision":
-        prompt = self._render_local_triple_merge_prompt(node, incoming_triple, candidates, context)
+        decisions = self._decide_local_triple_merges(
+            node,
+            [
+                LocalTripleMergeTask(
+                    incoming_ref="incoming:0",
+                    incoming_triple=incoming_triple,
+                    candidates=candidates,
+                )
+            ],
+            context,
+        )
+        return decisions[0]
+
+    def _decide_local_triple_merges(
+        self,
+        node: MemoryNode,
+        tasks: list["LocalTripleMergeTask"],
+        context: AssemblyContext,
+    ) -> list["LocalTripleMergeDecision"]:
+        prompt = self._render_local_triple_merge_prompt(node, tasks, context)
         payload = self.llm.generate_json(prompt)  # type: ignore[union-attr]
-        return LocalTripleMergeDecision.model_validate(payload)
+        decisions = TypeAdapter(list[LocalTripleMergeDecision]).validate_python(payload)
+        if len(decisions) != len(tasks):
+            raise RuntimeError(
+                f"Local triple maintenance expected {len(tasks)} decisions but received {len(decisions)}."
+            )
+        return decisions
 
     def _apply_local_triple_decision(
         self,
@@ -204,8 +241,7 @@ class GraphMaintenance:
     def _render_local_triple_merge_prompt(
         self,
         node: MemoryNode,
-        incoming_triple: LocalTriple,
-        candidates: list[LocalTriple],
+        tasks: list["LocalTripleMergeTask"],
         context: AssemblyContext,
     ) -> str:
         prompt_id = _prompt_id_from_path(self.config.maintenance.local_triples.prompt)
@@ -216,26 +252,16 @@ class GraphMaintenance:
             "content": node.content,
             "summary": node.summary,
         }
-        existing_triples = [
-            {
-                "ref": f"existing:{index}",
-                "subject": triple.subject,
-                "predicate": triple.predicate,
-                "object": triple.object,
-                "status": triple.status,
-                "qualifiers": semantic_triple_qualifiers(triple.qualifiers),
-            }
-            for index, triple in enumerate(candidates)
-        ]
+        conflicts = [_local_triple_conflict_prompt_payload(task) for task in tasks]
         replacements = {
             "{{NODE_CONTEXT}}": _compact_json(node_context),
-            "{{INCOMING_TRIPLE}}": _compact_json(_triple_prompt_payload(incoming_triple)),
-            "{{EXISTING_TRIPLES}}": _compact_json(existing_triples),
+            "{{LOCAL_TRIPLE_CONFLICTS}}": _compact_json(conflicts),
             "{{STRICT_JSON_SHAPE}}": (
-                'Return exactly one JSON object: {"decision":"keep_existing|keep_new|keep_both|merge|needs_review",'
+                'Return exactly one JSON array with one decision object per conflict, in the same order: '
+                '[{"decision":"keep_existing|keep_new|keep_both|merge|needs_review",'
                 '"affected_existing_refs":["existing:0"],'
                 '"merged_triple":{"subject":"...","predicate":"...","object":"...","qualifiers":{}},'
-                '"rationale":"Brief reason."}. Use null for merged_triple unless decision is merge.'
+                '"rationale":"Brief reason."}]. Use null for merged_triple unless decision is merge.'
             ),
         }
         rendered = prompt.text
@@ -496,6 +522,13 @@ class HyperEdgeDescriptionCompactionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     description: str
+
+
+@dataclass(frozen=True)
+class LocalTripleMergeTask:
+    incoming_ref: str
+    incoming_triple: LocalTriple
+    candidates: list[LocalTriple]
 
 
 class MergedTriplePayload(BaseModel):
@@ -847,6 +880,25 @@ def _triple_prompt_payload(triple: LocalTriple) -> dict[str, Any]:
         "object": triple.object,
         "status": triple.status,
         "qualifiers": semantic_triple_qualifiers(triple.qualifiers),
+    }
+
+
+def _local_triple_conflict_prompt_payload(task: LocalTripleMergeTask) -> dict[str, Any]:
+    existing_triples = [
+        {
+            "ref": f"existing:{index}",
+            "subject": triple.subject,
+            "predicate": triple.predicate,
+            "object": triple.object,
+            "status": triple.status,
+            "qualifiers": semantic_triple_qualifiers(triple.qualifiers),
+        }
+        for index, triple in enumerate(task.candidates)
+    ]
+    return {
+        "incoming_ref": task.incoming_ref,
+        "incoming_triple": _triple_prompt_payload(task.incoming_triple),
+        "existing_triples": existing_triples,
     }
 
 

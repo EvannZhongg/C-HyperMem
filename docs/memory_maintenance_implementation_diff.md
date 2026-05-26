@@ -33,7 +33,7 @@
 - 当前主写入路径不调用旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md`，这些旧 prompt 已删除。
 - 当前阶段目标不是补齐重型全局维护，而是在每个流程先形成可运行、可解释的轻量实现：
   - `MemoryNode`: deterministic `node_id` / entity alias 精确复用，summary 来源驱动拼接与阈值压缩。
-  - `LocalTriple`: 同 node 内 normalized S/P 候选触发 LLM 路由；完全同 SPO 只合并系统 provenance。
+  - `LocalTriple`: 同 node 内 normalized S/P 候选按 node 批量触发一次 LLM 路由；完全同 SPO 只合并系统 provenance。
   - `HyperEdge`: 相同成员节点集合生成同一 `edge_id`，同 ID 时合并 description/source metadata 并重写 edge 向量。
   - `EdgeCluster`: 共享成员节点形成聚合视图，不作为维护对象。
   - `Index`: 对 active objects 做 upsert；对当前已产生的 retired node 有 node vector 删除入口。
@@ -43,8 +43,8 @@
   - LLM 只输出压缩后的 `summary`；系统继续负责 ID、来源、触发条件、状态 metadata 和索引重写。
   - 达到触发条件但没有维护 LLM 时显式失败，不做规则兜底。
 - LocalTriple 维护已接入：
-  - 同一 node 内 incoming triple 先匹配 existing active triples 的 normalized subject，再匹配 normalized predicate；只要 `(subject, predicate)` 相同即触发 LLM 路由。
-  - LLM 输出 `keep_existing/keep_new/keep_both/merge/needs_review`，系统负责退役、追加、保存 merged triple、标记 uncertain 和索引重写。
+  - 同一 node 内 incoming triple 先匹配 existing active triples 的 normalized subject，再匹配 normalized predicate；只要 `(subject, predicate)` 相同即进入该 node 的批量维护任务。
+  - LLM 一次输出与批量冲突数组等长、顺序一致的 `LocalTripleMergeDecision` JSON 数组；单个决策为 `keep_existing/keep_new/keep_both/merge/needs_review`，系统负责退役、追加、保存 merged triple、标记 uncertain 和索引重写。
   - 有同 S/P 候选但没有维护 LLM 时显式失败，不做规则兜底。
 - 不存在旧 `fact_property_index`、`edge_type/relation/polarity/roles`、`role_in_edge/edge_relation` 兼容路径。
 - 节点复用只包含：
@@ -69,7 +69,7 @@
 | Node summary 维护 | `GraphMaintenance.merge_node()` 按系统 `source_turn_ids` 追踪 summary 来源；低于 `k` 时字符串拼接；达到来源数或 token 上限时调用 `node_summary_compaction` prompt 压缩 | 已完成第一阶段 Node summary 维护 |
 | Entity alias 复用 | 仅带 `entity` label 的节点使用 `canonical_text + metadata.aliases` 写入/查询 alias index | 已实现精确复用，不做模糊消歧 |
 | 普通节点复用 | `node_id = hash(namespace + fingerprint)`；同 ID 时合并 labels/attributes/metadata/local_graph | 已实现轻量合并 |
-| LocalGraph 维护 | incoming triples 先按 normalized SPO 去重；同 node merge 时 normalized S/P 相同触发 `local_triple_merge` LLM 路由 | 已完成轻量 LocalTriple 维护 |
+| LocalGraph 维护 | incoming triples 先按 normalized SPO 去重；同 node merge 时 normalized S/P 相同的冲突按 node 收集，并一次触发 `local_triple_merge` LLM 批量路由 | 已完成轻量 LocalTriple 维护 |
 | HyperEdge 构建 | 由 `edge_summaries[].description` + member nodes 构建；schema/DB 不含 `edge_type/relation` | 已切到 description-only |
 | HyperEdge merge | `edge_id = hash(namespace + sorted(member_node_ids))`；同成员集合复用同 edge，并合并 description/source metadata；description 变化后重写 `hyper_edge_description` 向量 | 已完成轻量同 ID 维护 |
 | EdgeCluster 维护 | 当前不作为维护对象；只保留共享成员节点的确定性聚合视图 | 已移除维护入口 |
@@ -140,7 +140,7 @@ metadata
   - labels 取并集。
   - attributes / metadata 做深合并。
   - incoming local_graph triples 先按 normalized SPO 去重；不同 S/P 直接追加。
-  - 若 incoming triple 与 existing active triple 的 normalized S/P 相同，则调用 `maintenance.local_triple_merge` prompt 做路由判断。
+  - 若 incoming triple 与 existing active triple 的 normalized S/P 相同，则收集为维护任务；同一 node 的全部维护任务会合并到一次 `maintenance.local_triple_merge` prompt 中做批量路由判断。
   - 如果 incoming summary 非空且来自新的 `source_turn_ids`，会追加到 existing summary。
   - `node.metadata.maintenance.node_summary.summary_source_turn_ids` 记录已进入 summary 的来源。
   - `node.metadata.maintenance.node_summary.pending_source_turn_ids` 记录上次压缩以来的来源批次。
@@ -194,8 +194,8 @@ metadata
 - `LocalGraphBuilder.build_node()` 对 incoming triples 按 normalized `(subject, predicate, object)` 去重。
 - `GraphMaintenance.merge_node()` 对 different S/P triples 直接追加。
 - 当 incoming triple 和 existing active triple 的 normalized `(subject, predicate, object)` 完全相同时，不调用 LLM，只合并系统来源 provenance。
-- 当 incoming triple 和 existing active triple 的 normalized `(subject, predicate)` 相同但 object 不同时，调用 `maintenance/local_triple_merge.md`。
-- LLM 路由动作：
+- 当 incoming triple 和 existing active triple 的 normalized `(subject, predicate)` 相同但 object 不同时，收集为该 node 的批量维护任务；同一 node 下所有任务通过一次 `maintenance/local_triple_merge.md` 调用处理。
+- LLM 返回一个与输入冲突数组等长、顺序一致的 JSON 数组；单个路由动作：
   - `keep_existing`: 丢弃 incoming。
   - `keep_new`: 退役 affected existing，保存 incoming。
   - `keep_both`: 保存 incoming，旧 triple 保持 active。
@@ -409,7 +409,7 @@ needs_review
 
 ### 4.3 LocalTriple 维护
 
-当前 LocalTriple 已支持同 S/P 候选的轻量 LLM 路由。下一阶段可增加：
+当前 LocalTriple 已支持同 S/P 候选的轻量批量 LLM 路由。下一阶段可增加：
 
 - triple-level superseded_by / invalidated_by。
 - valid_time / qualifier 维护。

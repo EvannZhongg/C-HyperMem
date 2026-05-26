@@ -95,8 +95,8 @@ Memory.add_memory/add
 
 - `LocalGraphBuilder` 仍只负责对 incoming triples 做 normalized SPO 批内去重。
 - 同一 node merge 时，incoming triple 会先与已有 active triples 对齐 normalized subject；若 normalized `(subject, predicate, object)` 完全相同，则不触发 LLM，只把系统来源写回既有 triple。
-- 若 subject 相同、predicate 相同但 object 不同，强触发 `maintenance/local_triple_merge.md`。
-- LLM 只做路由判断：`keep_existing`、`keep_new`、`keep_both`、`merge`、`needs_review`。
+- 若 subject 相同、predicate 相同但 object 不同，会先收集同一 node 下所有这类冲突，再批量触发一次 `maintenance/local_triple_merge.md`。
+- LLM 只做批量路由判断：一次返回与冲突数组等长、顺序一致的 `LocalTripleMergeDecision` JSON 数组；单个决策仍只允许 `keep_existing`、`keep_new`、`keep_both`、`merge`、`needs_review`。
 - 系统根据 LLM 返回的 caller refs 执行动作：丢弃 incoming、追加 incoming、退役 affected existing、保存 merged triple 或把 incoming 标为 `uncertain`。
 - 系统在 triple qualifiers 中维护 provenance：`source_turn_ids` 记录来源 turn，`source_triple_ids` 记录每次抽取来源实例；`maintenance_*_triple_ids` 记录被丢弃、替换、关联或合并的规范 `triple_id`。LLM 不生成这些 ID。
 - 如果有同 S/P 候选但没有维护 LLM，写入会显式失败，不做规则兜底。
@@ -276,7 +276,7 @@ SearchResult 当前结构要点：
 
 - **memory node merge / update / contradiction**
   设计方向：旧 fact merge/conflict prompt 需要泛化为统一 MemoryNode 级维护。
-  当前方案：写入主路径只做确定性同 ID / entity alias 精确复用，并已实现 Node summary 的跨来源拼接与阈值压缩，以及 LocalTriple 同 S/P 候选的 LLM 路由维护；仍不进行规则化事实 merge、node 冲突退役或 fallback 抽取。
+  当前方案：写入主路径只做确定性同 ID / entity alias 精确复用，并已实现 Node summary 的跨来源拼接与阈值压缩，以及 LocalTriple 同 S/P 候选的批量 LLM 路由维护；仍不进行规则化事实 merge、node 冲突退役或 fallback 抽取。
   原因：谓词是否多值、object 是否兼容、时间有效期如何更新都是语义判断，硬编码容易误退役事实。后续若接入维护 LLM，必须由明确候选召回触发，失败时显式失败。
 
 - **HyperEdge 复用与合并**
@@ -327,7 +327,7 @@ SearchResult 当前结构要点：
   当前 `BasicHyperEdgeBuilder` / `BasicEdgeClusterBuilder` 承担内置 M1 规则，`IngestionPipeline` 仍保留可注入的 `hyperedge_builder` / `edge_cluster_builder` 扩展点。这个形态比“只有 protocol 占位”更可运行，也比直接把规则写死在 assembler 更容易替换。
 
 - **维护 prompt 按候选触发，不做规则兜底**
-  原设计容易让后续实现把多个 maintenance prompt 串到每次写入中。当前主路径只在 Node summary 达到来源数或 token 阈值时调用 `maintenance.node_summary_compaction`，或在 LocalTriple 出现同 S/P 候选时调用 `maintenance.local_triple_merge`；后续接入新 prompt 时，应有明确召回候选、触发条件、成本控制和失败处理，不应每次写入无条件多轮调用 LLM，也不应用脆弱规则代替语义判决。
+  原设计容易让后续实现把多个 maintenance prompt 串到每次写入中。当前主路径只在 Node summary 达到来源数或 token 阈值时调用 `maintenance.node_summary_compaction`，或在 LocalTriple 出现同 S/P 候选时按 node 批量调用一次 `maintenance.local_triple_merge`；后续接入新 prompt 时，应有明确召回候选、触发条件、成本控制和失败处理，不应每次写入无条件多轮调用 LLM，也不应用脆弱规则代替语义判决。
 
 - **`nodes` 作为长期记忆对象的唯一主输入**
   当前不再接受 `entities/events/assertions/sources` 主抽取 shape，也不建立 fact property index。后续即使扩展 extraction schema，也应避免同一事实在多个字段重复入库。
@@ -372,7 +372,7 @@ SearchResult 当前结构要点：
 - `unconfigured_label_policy` 不作为 prompt label 渲染，只以未配置标签规则传入。
 - 抽取 prompt 注入 `node_labels.yaml`。
 - Node summary 维护：低于 `k` 时跨来源拼接并重写 node_content 向量；达到 `k` 或 token 上限时强触发 LLM 压缩；无维护 LLM 时显式失败。
-- LocalTriple 维护：同 node 内 normalized S/P 相同触发 LLM 路由，覆盖 `keep_existing/keep_new/keep_both/merge/needs_review`，并验证 retired triples 不进入 node-local-graph 向量文本。
+- LocalTriple 维护：同 node 内 normalized S/P 相同触发按 node 批量 LLM 路由，覆盖 `keep_existing/keep_new/keep_both/merge/needs_review`，并验证 retired triples 不进入 node-local-graph 向量文本。
 - 维护 prompt registry 加载 `maintenance.node_summary_compaction` 和 `maintenance.local_triple_merge`。
 - LLM contradiction check 驱动的冲突 fact 退役与 correction edge。
 - `loves/travels_to` 等多值语义由维护 LLM 判为 compatible 时不会被错误退役。

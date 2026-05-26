@@ -339,12 +339,14 @@ def test_node_summary_compaction_requires_maintenance_llm(tmp_path):
 def test_local_triple_maintenance_keep_new_retires_existing_triple_and_reindexes(tmp_path):
     maintenance_llm = MaintenanceLLM(
         [
-            {
-                "decision": "keep_new",
-                "affected_existing_refs": ["existing:0"],
-                "merged_triple": None,
-                "rationale": "The new location replaces the old location.",
-            }
+            [
+                {
+                    "decision": "keep_new",
+                    "affected_existing_refs": ["existing:0"],
+                    "merged_triple": None,
+                    "rationale": "The new location replaces the old location.",
+                }
+            ]
         ]
     )
     embedding_client = RecordingEmbeddingClient()
@@ -399,12 +401,14 @@ def test_local_triple_maintenance_keep_new_retires_existing_triple_and_reindexes
 def test_local_triple_maintenance_keep_existing_reindexes_active_graph_without_incoming(tmp_path):
     maintenance_llm = MaintenanceLLM(
         [
-            {
-                "decision": "keep_existing",
-                "affected_existing_refs": ["existing:0"],
-                "merged_triple": None,
-                "rationale": "The existing triple already covers the incoming triple.",
-            }
+            [
+                {
+                    "decision": "keep_existing",
+                    "affected_existing_refs": ["existing:0"],
+                    "merged_triple": None,
+                    "rationale": "The existing triple already covers the incoming triple.",
+                }
+            ]
         ]
     )
     embedding_client = RecordingEmbeddingClient()
@@ -489,12 +493,14 @@ def test_local_triple_maintenance_duplicate_spo_merges_turn_provenance_without_l
 def test_local_triple_maintenance_keep_both_preserves_compatible_values(tmp_path):
     maintenance_llm = MaintenanceLLM(
         [
-            {
-                "decision": "keep_both",
-                "affected_existing_refs": [],
-                "merged_triple": None,
-                "rationale": "Both preferences can coexist.",
-            }
+            [
+                {
+                    "decision": "keep_both",
+                    "affected_existing_refs": [],
+                    "merged_triple": None,
+                    "rationale": "Both preferences can coexist.",
+                }
+            ]
         ]
     )
     memory = Memory.from_config(
@@ -534,17 +540,19 @@ def test_local_triple_maintenance_keep_both_preserves_compatible_values(tmp_path
 def test_local_triple_maintenance_merge_replaces_candidates_with_merged_triple(tmp_path):
     maintenance_llm = MaintenanceLLM(
         [
-            {
-                "decision": "merge",
-                "affected_existing_refs": ["existing:0"],
-                "merged_triple": {
-                    "subject": "Alice",
-                    "predicate": "works_at",
-                    "object": "OpenAI in San Francisco",
-                    "qualifiers": {"specificity": "city"},
-                },
-                "rationale": "The new triple is a more specific version.",
-            }
+            [
+                {
+                    "decision": "merge",
+                    "affected_existing_refs": ["existing:0"],
+                    "merged_triple": {
+                        "subject": "Alice",
+                        "predicate": "works_at",
+                        "object": "OpenAI in San Francisco",
+                        "qualifiers": {"specificity": "city"},
+                    },
+                    "rationale": "The new triple is a more specific version.",
+                }
+            ]
         ]
     )
     memory = Memory.from_config(
@@ -583,6 +591,70 @@ def test_local_triple_maintenance_merge_replaces_candidates_with_merged_triple(t
     assert merged_from_ids[1] != node.local_graph.triples[1].triple_id
     assert len(node.local_graph.triples[1].qualifiers["source_triple_ids"]) == 2
     assert node.local_graph.triples[1].qualifiers["maintenance_merged_source_turn_ids"] == ["turn:0", "turn:1"]
+
+
+def test_local_triple_maintenance_batches_multiple_conflicts_for_same_node(tmp_path):
+    maintenance_llm = MaintenanceLLM(
+        [
+            [
+                {
+                    "decision": "keep_new",
+                    "affected_existing_refs": ["existing:0"],
+                    "merged_triple": None,
+                    "rationale": "The new city replaces the older residence.",
+                },
+                {
+                    "decision": "keep_both",
+                    "affected_existing_refs": [],
+                    "merged_triple": None,
+                    "rationale": "Both preferences can coexist.",
+                },
+            ]
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice lives in California and likes tea.",
+                    triples=[
+                        {"subject": "Alice", "predicate": "lives_in", "object": "California"},
+                        {"subject": "Alice", "predicate": "likes", "object": "tea"},
+                    ],
+                ),
+                _single_entity_payload(
+                    "Alice lives in San Francisco and likes coffee.",
+                    triples=[
+                        {"subject": "Alice", "predicate": "lives_in", "object": "San Francisco"},
+                        {"subject": "Alice", "predicate": "likes", "object": "coffee"},
+                    ],
+                ),
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "local_triple_batch_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I live in California and like tea.", namespace=namespace)
+    memory.add_memory("I live in San Francisco and like coffee.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert maintenance_llm.call_count == 1
+    assert maintenance_llm.prompts[0].count('"incoming_ref"') == 2
+    assert '"predicate":"lives_in"' in maintenance_llm.prompts[0]
+    assert '"object":"San Francisco"' in maintenance_llm.prompts[0]
+    assert '"predicate":"likes"' in maintenance_llm.prompts[0]
+    assert '"object":"coffee"' in maintenance_llm.prompts[0]
+    assert [(triple.predicate, triple.object, triple.status) for triple in node.local_graph.triples] == [
+        ("lives_in", "California", "retired"),
+        ("likes", "tea", "active"),
+        ("lives_in", "San Francisco", "active"),
+        ("likes", "coffee", "active"),
+    ]
+    assert node.metadata["maintenance"]["local_triples"]["decision_count"] == 2
 
 
 def test_local_triple_maintenance_requires_llm_for_same_subject_predicate(tmp_path):

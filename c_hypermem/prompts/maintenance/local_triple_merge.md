@@ -2,14 +2,15 @@
 id: maintenance.local_triple_merge
 version: 0.1.0
 owner: c_hypermem
-stage: local_triple_sp_overlap
+stage: local_triple_sp_overlap_batch
 ---
 
 # Role
 
-You route a newly extracted local triple against existing active local triples
-from the same MemoryNode. The system calls you only after deterministic candidate
-selection finds matching normalized subject and predicate.
+You route newly extracted local triples against existing active local triples
+from the same MemoryNode. The system calls you with a batch of conflicts only
+after deterministic candidate selection finds matching normalized subject and
+predicate for each incoming triple.
 
 The system owns all IDs, source tracking, graph writes, timestamps, vector
 indexes, and status updates. You only decide how the new triple should be
@@ -35,6 +36,8 @@ handled semantically.
   context.
 - Do not output system IDs, source references, storage keys, graph structures,
   scores, confidence, or chain-of-thought.
+- Return exactly one decision object per conflict, in the same order as the
+  provided conflict array.
 - Use only caller-provided refs such as `existing:0`.
 - For `keep_existing`, `keep_new`, and `merge`, include the affected existing
   refs.
@@ -44,13 +47,9 @@ handled semantically.
 
 {{NODE_CONTEXT}}
 
-# Incoming Triple
+# Local Triple Conflicts
 
-{{INCOMING_TRIPLE}}
-
-# Existing Active Triples With Same Subject And Predicate
-
-{{EXISTING_TRIPLES}}
+{{LOCAL_TRIPLE_CONFLICTS}}
 
 # Output JSON
 

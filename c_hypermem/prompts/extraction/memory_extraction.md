@@ -13,7 +13,9 @@ outputs:
 
 # Task
 
-You extract compact long-term memory candidates from an agent interaction.
+Extract compact, long-term, reusable memory objects from the `Target to Extract`.
+
+**You must act as a third-party observer. Extract durable facts not only about the User, but also about the Assistant (e.g., decisions made, tasks committed to, or important tool results summarized by the Assistant).**
 
 # Input Processing Rule
 You will receive `Context: Recent History` and a `Target to Extract`. 
@@ -47,11 +49,11 @@ Return exactly one JSON object:
   "edge_summaries": [
     {
       "ref": "e1",
-      "description": "User stated a morning interview preference in this interaction."
+      "description": "User's interview scheduling preference."
     },
     {
       "ref": "e2",
-      "description": "User's interview scheduling preference."
+      "description": "Assistant committed to setting up a calendar reminder."
     }
   ],
   "nodes": [
@@ -59,11 +61,11 @@ Return exactly one JSON object:
       "ref": "n1",
       "labels": ["entity", "person"],
       "canonical_text": "User",
-      "summaries": ["User is the current human user."],
+      "summaries": ["User is the human interacting with the system."],
       "triples": [
-        {"subject": "User", "predicate": "is_a", "object": "current human user"}
+        {"subject": "User", "predicate": "is_a", "object": "human user"}
       ],
-      "edge_summary_refs": ["e2"]
+      "edge_summary_refs": ["e1"]
     },
     {
       "ref": "n2",
@@ -73,17 +75,27 @@ Return exactly one JSON object:
       "triples": [
         {"subject": "User", "predicate": "prefers", "object": "morning interviews"}
       ],
-      "edge_summary_refs": ["e1", "e2"]
+      "edge_summary_refs": ["e1"]
     },
     {
       "ref": "n3",
-      "labels": ["event"],
-      "canonical_text": "User discussed interview scheduling.",
-      "summaries": ["User stated an interview scheduling preference."],
+      "labels": ["entity", "agent"],
+      "canonical_text": "Assistant",
+      "summaries": ["Assistant is the AI agent handling the tasks."],
       "triples": [
-        {"subject": "User", "predicate": "discussed", "object": "interview scheduling"}
+        {"subject": "Assistant", "predicate": "is_a", "object": "AI agent"}
       ],
-      "edge_summary_refs": ["e1"]
+      "edge_summary_refs": ["e2"]
+    },
+    {
+      "ref": "n4",
+      "labels": ["task"],
+      "canonical_text": "Assistant will set a calendar reminder for the morning interview.",
+      "summaries": ["Assistant committed to a future action regarding the interview."],
+      "triples": [
+        {"subject": "Assistant", "predicate": "will_set_reminder_for", "object": "morning interview"}
+      ],
+      "edge_summary_refs": ["e2"]
     }
   ],
   "metadata": {}

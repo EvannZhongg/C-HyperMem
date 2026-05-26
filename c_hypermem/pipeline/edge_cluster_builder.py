@@ -163,7 +163,10 @@ class BasicEdgeClusterBuilder:
                     )
                     semantic_occurrences.setdefault(_anchor_key(occurrence), []).append(occurrence)
 
-        eligible_by_anchor = _eligible_semantic_anchor_occurrences_by_anchor(semantic_occurrences)
+        eligible_by_anchor = _eligible_semantic_anchor_occurrences_by_anchor(
+            semantic_occurrences,
+            stop_nodes=_normalized_stop_nodes(self.config.edge_clusters.stop_nodes),
+        )
         for key, occurrences in eligible_by_anchor.items():
             eligible = _unique_anchor_occurrences(occurrences)
             if eligible:
@@ -412,60 +415,45 @@ def _anchor_reasons(key: AnchorKey, occurrences: list[AnchorOccurrence]) -> list
 
 def _eligible_semantic_anchor_occurrences_by_anchor(
     occurrences_by_anchor: dict[AnchorKey, list[AnchorOccurrence]],
+    *,
+    stop_nodes: set[str],
 ) -> dict[AnchorKey, list[AnchorOccurrence]]:
-    unique_by_anchor = {
-        key: _unique_anchor_occurrences(occurrences)
-        for key, occurrences in occurrences_by_anchor.items()
-    }
-    all_occurrences = [
-        occurrence
-        for occurrences in unique_by_anchor.values()
-        for occurrence in occurrences
-    ]
-    by_pair: dict[tuple[str, str], list[tuple[str, AnchorOccurrence, AnchorOccurrence]]] = {}
-    by_edge: dict[str, list[AnchorOccurrence]] = {}
-    for occurrence in all_occurrences:
-        if occurrence.position in {"subject", "object"}:
+    eligible_occurrences: dict[AnchorKey, dict[tuple[str, str | None, str | None], AnchorOccurrence]] = {}
+    for key, raw_occurrences in occurrences_by_anchor.items():
+        occurrences = [
+            occurrence
+            for occurrence in _unique_anchor_occurrences(raw_occurrences)
+            if occurrence.position in {"subject", "object"}
+        ]
+        by_edge: dict[str, list[AnchorOccurrence]] = {}
+        for occurrence in occurrences:
             by_edge.setdefault(occurrence.edge_id, []).append(occurrence)
 
-    edge_ids = sorted(by_edge)
-    for left_index, left_edge_id in enumerate(edge_ids):
-        for right_edge_id in edge_ids[left_index + 1:]:
-            pair_key = (left_edge_id, right_edge_id)
-            for left_occurrence in by_edge[left_edge_id]:
-                for right_occurrence in by_edge[right_edge_id]:
-                    reason = f"{left_occurrence.position}_{right_occurrence.position}"
-                    by_pair.setdefault(pair_key, []).append((reason, left_occurrence, right_occurrence))
-
-    eligible_occurrences: dict[AnchorKey, dict[tuple[str, str | None, str | None], AnchorOccurrence]] = {}
-    for pair_hits in by_pair.values():
-        subject_cross_hits = [
-            hit for hit in pair_hits if hit[0] in {"subject_object", "object_subject"}
-        ]
-        subject_subject_hits = [
-            hit for hit in pair_hits
-            if hit[0] == "subject_subject"
-        ]
-        subject_subject_anchor_values = {
-            hit[1].anchor_value
-            for hit in subject_subject_hits
-        }
-        eligible_hits = []
-        if subject_cross_hits:
-            eligible_hits.extend(subject_cross_hits)
-        if len(subject_subject_anchor_values) >= 2:
-            eligible_hits.extend(subject_subject_hits)
-        for _, left_occurrence, right_occurrence in eligible_hits:
-            for occurrence in (left_occurrence, right_occurrence):
-                key = _anchor_key(occurrence)
-                eligible_occurrences.setdefault(key, {})[
-                    (occurrence.edge_id, occurrence.triple_id, occurrence.position)
-                ] = occurrence
+        edge_ids = sorted(by_edge)
+        for left_index, left_edge_id in enumerate(edge_ids):
+            for right_edge_id in edge_ids[left_index + 1:]:
+                for left_occurrence in by_edge[left_edge_id]:
+                    for right_occurrence in by_edge[right_edge_id]:
+                        reason = f"{left_occurrence.position}_{right_occurrence.position}"
+                        if reason == "object_object":
+                            continue
+                        if reason == "subject_subject" and key.anchor_value in stop_nodes:
+                            continue
+                        if reason not in {"subject_subject", "subject_object", "object_subject"}:
+                            continue
+                        for occurrence in (left_occurrence, right_occurrence):
+                            eligible_occurrences.setdefault(key, {})[
+                                (occurrence.edge_id, occurrence.triple_id, occurrence.position)
+                            ] = occurrence
 
     return {
         key: [items[item_key] for item_key in sorted(items)]
         for key, items in eligible_occurrences.items()
     }
+
+
+def _normalized_stop_nodes(values: list[str]) -> set[str]:
+    return {normalized for value in values if (normalized := normalize_text(value))}
 
 
 def _merge_anchor_metadata(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:

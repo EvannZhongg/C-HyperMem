@@ -271,7 +271,7 @@ metadata
 
 - EdgeCluster 当前是确定性锚点 HyperEdge 聚合视图。
 - 两条 HyperEdge 只要共享至少一个 `member_node_id`，就可以进入同一 EdgeCluster。
-- 除共享 member node 外，如果两条 HyperEdge 的成员 node 下 active LocalTriples 出现符合 eligibility 的 normalized subject/object 端点重合，也可以进入 EdgeCluster。端点 eligibility 为：`subject_object` / `object_subject` 命中至少 1 次，或同一 edge pair 上 `subject_subject` 命中至少 2 个文本不同的 normalized subject；单独 `object_object` 不再建立 cluster。
+- 除共享 member node 外，如果两条 HyperEdge 的成员 node 下 active LocalTriples 出现符合 eligibility 的 normalized subject/object 端点重合，也可以进入 EdgeCluster。端点 eligibility 为：`subject_subject` 至少 1 次，或 `subject_object` / `object_subject` 命中至少 1 次；`edge_clusters.stop_nodes` 中的 subject 不触发 `subject_subject`，但不屏蔽交叉命中；单独 `object_object` 不再建立 cluster。
 - `BasicEdgeClusterBuilder` 统一使用 `AnchorKey/AnchorOccurrence` 构建 shared-node 与 semantic-anchor clusters；两类 cluster 共享同一套 fingerprint、metadata merge、description variant append 和 `EdgeClusterMember` 去重流程。
 - 示例：edge A 的某个成员 node 有 `S1-P1-O1`，edge B 的某个成员 node 有 `S2-P2-O2`；如果 `O1 == S2`，则保持两个 triples 仍为单跳表达，同时建立一个 `semantic_anchor` cluster，把两条 edge 组织到同一检索视图中。
 - 如果同一组 edge 同时共享 member node，且还存在 eligible `S-S` 或 `S-O/O-S` 等多个端点锚点，应在 cluster metadata 中保留多个 `cluster_reasons` / `anchor_occurrences`，并对 `EdgeClusterMember(cluster_id, edge_id)` 做确定性去重。

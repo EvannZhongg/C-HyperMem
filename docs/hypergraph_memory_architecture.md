@@ -250,7 +250,7 @@ EdgeCluster
 
 `HyperEdge` 保留具体证据、成员、边描述、时间和状态；`EdgeCluster` 只负责把具有确定性共享锚点的边组织到一起。当前最保守的锚点是共享 `member_node_id`：只要两条 HyperEdge 共享至少一个 `member_node_id`，它们就可以被视为同一个 EdgeCluster 的成员。下一阶段可以把锚点扩展到 node-local triples 的端点重合，但 EdgeCluster 仍不承担 HyperEdge merge、相似度聚类、冲突判断或后台维护职责。
 
-局部图锚点扩展的目标是：保持三元组仍为单跳 `S-P-O`，不把节点内部 triples 重写成多跳图；当两条 HyperEdge 下的成员 node 拥有 active local triples，且这些 triples 的端点文本确定性重合并满足 eligibility 时，系统额外建立 EdgeCluster 作为跨边关联视图。例如一个 node 内有 `S1-P1-O1`，另一个 node 内有 `S2-P2-O2`，如果 `O1` 与 `S2` 规范化后相同，则两条 edge 可以进入一个 `shared_triple_anchor` cluster，用来表达“第一条局部图的 object 与第二条局部图的 subject 指向同一锚点”。当前 eligibility 为：`S-O` / `O-S` 命中至少 1 次，或同一 edge pair 上 `S-S` 命中至少 2 个文本不同的 normalized subject；单独 `O-O` 不再建立 cluster。
+局部图锚点扩展的目标是：保持三元组仍为单跳 `S-P-O`，不把节点内部 triples 重写成多跳图；当两条 HyperEdge 下的成员 node 拥有 active local triples，且这些 triples 的端点文本确定性重合并满足 eligibility 时，系统额外建立 EdgeCluster 作为跨边关联视图。例如一个 node 内有 `S1-P1-O1`，另一个 node 内有 `S2-P2-O2`，如果 `O1` 与 `S2` 规范化后相同，则两条 edge 可以进入一个 `shared_triple_anchor` cluster，用来表达“第一条局部图的 object 与第二条局部图的 subject 指向同一锚点”。当前 eligibility 为：`S-S` 命中至少 1 次，或 `S-O` / `O-S` 命中至少 1 次；`edge_clusters.stop_nodes` 中的 normalized subject（默认 `User`、`Assistant`）不触发 `S-S`，但 object 与 stop-node subject 的交叉命中仍可触发；单独 `O-O` 不再建立 cluster。
 
 该扩展需要遵守：
 

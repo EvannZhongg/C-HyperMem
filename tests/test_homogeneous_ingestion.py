@@ -51,6 +51,7 @@ def test_default_config_uses_global_token_counting_config():
     assert models_raw["nlp"]["model_path"] == "models/en_core_web_sm"
     assert config.retrieval.rrf_k == 60
     assert config.retrieval.hyper_edge_description_vector_top_k == 10
+    assert config.edge_clusters.stop_nodes == ["User", "Assistant"]
     assert "unconfigured_label_policy" not in (default_raw.get("node_labels") or {})
     assert not hasattr(config.node_labels, "unconfigured_label_policy")
     assert "tokenizer_encoding" not in default_raw["maintenance"]["node_summary"]
@@ -238,7 +239,7 @@ def test_edge_cluster_does_not_group_semantic_anchor_from_object_object_only(tmp
     assert semantic_clusters == []
 
 
-def test_edge_cluster_does_not_group_subject_subject_when_same_subject_repeats(tmp_path):
+def test_edge_cluster_groups_subject_subject_after_one_non_stop_subject_match(tmp_path):
     memory = Memory.from_config(
         {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
         extractor=SequenceHomogeneousExtractor(
@@ -278,7 +279,7 @@ def test_edge_cluster_does_not_group_subject_subject_when_same_subject_repeats(t
             ]
         ),
     )
-    namespace = "subject_subject_same_subject_repeats_no_cluster_ns"
+    namespace = "subject_subject_single_non_stop_subject_cluster_ns"
     memory.reset(namespace)
 
     memory.add_memory("Alice has a work profile.", namespace=namespace)
@@ -289,7 +290,119 @@ def test_edge_cluster_does_not_group_subject_subject_when_same_subject_repeats(t
     memory.close()
 
     assert len(edges) == 2
+    assert len(semantic_clusters) == 1
+    cluster = semantic_clusters[0]
+    assert cluster.metadata["anchor_value"] == "alice"
+    assert cluster.metadata["cluster_reasons"] == ["subject_subject"]
+
+
+def test_edge_cluster_stop_node_subject_subject_does_not_trigger_cluster(tmp_path):
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                {
+                    "edge_summaries": [{"ref": "e1", "description": "User's work profile."}],
+                    "nodes": [
+                        {
+                            "ref": "n1",
+                            "labels": ["fact"],
+                            "canonical_text": "User's work profile.",
+                            "summaries": ["User has work profile details."],
+                            "triples": [
+                                {"subject": "User", "predicate": "has_role", "object": "analyst"},
+                                {"subject": "User", "predicate": "uses_tool", "object": "Todoist"},
+                            ],
+                            "edge_summary_refs": ["e1"],
+                        }
+                    ],
+                },
+                {
+                    "edge_summaries": [{"ref": "e2", "description": "User's planning profile."}],
+                    "nodes": [
+                        {
+                            "ref": "n2",
+                            "labels": ["fact"],
+                            "canonical_text": "User's planning profile.",
+                            "summaries": ["User has planning profile details."],
+                            "triples": [
+                                {"subject": "User", "predicate": "has_degree", "object": "Business Administration"},
+                                {"subject": "User", "predicate": "tracks_expenses_with", "object": "Mint"},
+                            ],
+                            "edge_summary_refs": ["e2"],
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    namespace = "subject_subject_stop_node_subject_no_cluster_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("User has a work profile.", namespace=namespace)
+    memory.add_memory("User has a planning profile.", namespace=namespace)
+    clusters = memory.store.list_edge_clusters(namespace)
+    memory.close()
+
+    semantic_clusters = [cluster for cluster in clusters if cluster.cluster_labels == ["semantic_anchor"]]
     assert semantic_clusters == []
+
+
+def test_edge_cluster_stop_node_object_subject_still_triggers_cluster(tmp_path):
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                {
+                    "edge_summaries": [{"ref": "e1", "description": "Workspace assigned Assistant to User."}],
+                    "nodes": [
+                        {
+                            "ref": "n1",
+                            "labels": ["fact"],
+                            "canonical_text": "Workspace assigned Assistant to User.",
+                            "summaries": ["Workspace assigned Assistant to User."],
+                            "triples": [{"subject": "Workspace", "predicate": "assigned_to", "object": "User"}],
+                            "edge_summary_refs": ["e1"],
+                        }
+                    ],
+                },
+                {
+                    "edge_summaries": [{"ref": "e2", "description": "User owns Project Atlas."}],
+                    "nodes": [
+                        {
+                            "ref": "n2",
+                            "labels": ["fact"],
+                            "canonical_text": "User owns Project Atlas.",
+                            "summaries": ["User owns Project Atlas."],
+                            "triples": [{"subject": "User", "predicate": "owns", "object": "Project Atlas"}],
+                            "edge_summary_refs": ["e2"],
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    namespace = "stop_node_object_subject_cluster_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Workspace assigned Assistant to User.", namespace=namespace)
+    memory.add_memory("User owns Project Atlas.", namespace=namespace)
+    edges = memory.store.list_edges(namespace)
+    clusters = memory.store.list_edge_clusters(namespace)
+    semantic_clusters = [cluster for cluster in clusters if cluster.cluster_labels == ["semantic_anchor"]]
+    semantic_members = memory.store.list_edge_cluster_members(
+        namespace,
+        [cluster.cluster_id for cluster in semantic_clusters],
+    )
+    memory.close()
+
+    assert len(edges) == 2
+    assert len(semantic_clusters) == 1
+    cluster = semantic_clusters[0]
+    assert cluster.metadata["anchor_value"] == "user"
+    assert set(cluster.metadata["cluster_reasons"]) <= {"subject_object", "object_subject"}
+    assert {occurrence["position"] for occurrence in cluster.metadata["anchor_occurrences"]} == {"object", "subject"}
+    assert {member.edge_id for member in semantic_members} == {edge.edge_id for edge in edges}
 
 
 def test_edge_cluster_groups_subject_subject_after_two_distinct_subjects_for_same_pair(tmp_path):

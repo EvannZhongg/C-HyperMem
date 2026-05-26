@@ -52,7 +52,7 @@ Memory.add_memory/add
   -> IngestionPipeline
   -> LLMMemoryExtractor 或显式 extractor
   -> GraphAssembler
-     -> GraphMaintenance(node summary / local triple maintenance during node merge)
+     -> GraphMaintenance(node summary / local triple maintenance during node initialization or merge)
   -> SQLiteStore
   -> VectorStore(Qdrant, rebuildable side indexes)
 ```
@@ -76,7 +76,7 @@ Memory.add_memory/add
   - 根据 `node.edge_summary_refs` 反向收集 HyperEdge 成员。
   - 编排 `BasicHyperEdgeBuilder.build_from_summary()` 构建 description-only HyperEdge。
   - 编排 `BasicEdgeClusterBuilder` 为共享成员节点和 local-triple semantic anchor 建立 EdgeCluster 关系，并追加 cluster members。
-  - 编排 `GraphMaintenance.merge_node()` 对同一 node 的跨来源 summary 和 node 内 triples 做维护。
+  - 编排 `GraphMaintenance.merge_node()` 对同一 node 的跨来源 summary 和 node 内 triples 做维护；新建 node 的初始 triples 也经过同一 LocalTriple 路由入口。
   - 对带 `entity` label 的节点写入 entity alias index；新主路径不再写入 fact property index。
 
 ## 5. 维护
@@ -95,8 +95,8 @@ Memory.add_memory/add
 当前已接入 LocalTriple 维护：
 
 - `LocalGraphBuilder` 仍只负责对 incoming triples 做 normalized SPO 批内去重。
-- 同一 node merge 时，incoming triple 会先与已有 active triples 对齐 normalized subject；若 normalized `(subject, predicate, object)` 完全相同，则不触发 LLM，只把系统来源写回既有 triple。
-- 若 subject 相同、predicate 相同但 object 不同，会先收集同一 node 下所有这类冲突，再批量触发一次 `maintenance/local_triple_merge.md`。
+- 在新 node 首次初始化或同一 node 后续 merge 时，incoming triple 都会先与该 node 已接受的 active triples 对齐 normalized subject；这些 active triples 可以来自既有存储，也可以是当前一次抽取中排在前面的 triple。若 normalized `(subject, predicate, object)` 完全相同，则不触发 LLM，只按既有批内去重或系统来源合并处理。
+- 若 subject 相同、predicate 相同但 object 不同，会先收集本次写入中形成的这类冲突，再批量触发一次 `maintenance/local_triple_merge.md`；因此一个 turn 内首次抽出的同 S/P 多值 triples 也走维护 prompt。
 - LLM 只做批量路由判断：一次返回与冲突数组等长、顺序一致的 `LocalTripleMergeDecision` JSON 数组；单个决策仍只允许 `keep_existing`、`keep_new`、`keep_both`、`merge`、`needs_review`。
 - 系统根据 LLM 返回的 caller refs 执行动作：丢弃 incoming、追加 incoming、退役 affected existing、保存 merged triple 或把 incoming 标为 `uncertain`。
 - 系统在 triple qualifiers 中维护 provenance：`source_turn_ids` 记录来源 turn，`source_triple_ids` 记录每次抽取来源实例；`maintenance_*_triple_ids` 记录被丢弃、替换、关联或合并的规范 `triple_id`。LLM 不生成这些 ID。
@@ -282,7 +282,7 @@ SearchResult 当前结构要点：
 
 当前实现仍低于设计文档的部分：
 
-- Node summary、LocalTriple 与 description-only HyperEdge description 维护已接入同构节点/边合并路径；更完整的 memory node merge/update/conflict 仍待实现。
+- Node summary、LocalTriple 与 description-only HyperEdge description 维护已接入同构节点/边写入路径；其中 LocalTriple 也覆盖新 node 首次写入批次内部的同 S/P 多值候选；更完整的 memory node merge/update/conflict 仍待实现。
 - `state/task/instruction/tool` 已作为标签配置存在，但尚未都有专门构建策略；当前主要依靠 LLM 输出 labels 和统一节点结构承载。`turn` 已从节点标签配置中独立出来，只作为对话记录和来源追踪配置。
 - 检索主流程已接入 node_content（content + summary 拼接）、node-local-graph 和 HyperEdge description 向量召回，并已按 Dual-Track Edge-Level RRF 落地；当前尚未接入 EdgeCluster canonical / variant 向量召回，也未接入 turn_dialogue 向量召回。
 - EdgeCluster 当前保留为确定性锚点聚合视图；检索侧已能在命中 edge 所属 cluster 时带出 sibling edge descriptions 和 sibling edge nodes。`BasicEdgeClusterBuilder` 统一使用 `AnchorKey/AnchorOccurrence` 构建 shared-node 与 semantic-anchor clusters：共享成员 node 形成 `cluster_labels=["shared_node"]`；semantic-anchor cluster 只在不同 HyperEdge 的 active local triples 满足 `subject_subject` 至少 1 次，或 `subject_object/object_subject` 至少 1 次时建立。`edge_clusters.stop_nodes` 中的 normalized 文本（默认 `User`、`Assistant`）作为 subject 参与 `subject_subject` 时不触发 cluster；但 object 与 stop-node subject 的 `subject_object/object_subject` 交叉命中仍可触发。单独 `object_object` 不再建立 semantic cluster。两类 cluster metadata 都记录 `cluster_basis/anchor_value/anchor_occurrences/cluster_reasons`；semantic anchor 额外记录 `anchor_positions`。当前不做相似 cluster 向量召回、LLM cluster merge、后台宏观整理或复杂冲突状态维护。
@@ -299,7 +299,7 @@ SearchResult 当前结构要点：
 
 - **memory node merge / update / contradiction**
   设计方向：旧 fact merge/conflict prompt 需要泛化为统一 MemoryNode 级维护。
-  当前方案：写入主路径只做确定性同 ID / entity alias 精确复用，并已实现 Node summary 的跨来源拼接与阈值压缩，以及 LocalTriple 同 S/P 候选的批量 LLM 路由维护；仍不进行规则化事实 merge、node 冲突退役或 fallback 抽取。
+  当前方案：写入主路径只做确定性同 ID / entity alias 精确复用，并已实现 Node summary 的跨来源拼接与阈值压缩，以及 LocalTriple 在首次写入和后续 merge 中对同 S/P 候选的批量 LLM 路由维护；仍不进行规则化事实 merge、node 冲突退役或 fallback 抽取。
   原因：谓词是否多值、object 是否兼容、时间有效期如何更新都是语义判断，硬编码容易误退役事实。后续若接入维护 LLM，必须由明确候选召回触发，失败时显式失败。
 
 - **HyperEdge 复用与合并**
@@ -351,7 +351,7 @@ SearchResult 当前结构要点：
   当前 `BasicHyperEdgeBuilder` / `BasicEdgeClusterBuilder` 承担内置 M1 规则，`IngestionPipeline` 仍保留可注入的 `hyperedge_builder` / `edge_cluster_builder` 扩展点。这个形态比“只有 protocol 占位”更可运行，也比直接把规则写死在 assembler 更容易替换。
 
 - **维护 prompt 按候选触发，不做规则兜底**
-  原设计容易让后续实现把多个 maintenance prompt 串到每次写入中。当前主路径只在 Node summary 达到来源数或 token 阈值时调用 `maintenance.node_summary_compaction`，或在 LocalTriple 出现同 S/P 候选时按 node 批量调用一次 `maintenance.local_triple_merge`；后续接入新 prompt 时，应有明确召回候选、触发条件、成本控制和失败处理，不应每次写入无条件多轮调用 LLM，也不应用脆弱规则代替语义判决。
+  原设计容易让后续实现把多个 maintenance prompt 串到每次写入中。当前主路径只在 Node summary 达到来源数或 token 阈值时调用 `maintenance.node_summary_compaction`，或在 LocalTriple 出现同 S/P 多值候选时按 node 批量调用一次 `maintenance.local_triple_merge`；后续接入新 prompt 时，应有明确召回候选、触发条件、成本控制和失败处理，不应每次写入无条件多轮调用 LLM，也不应用脆弱规则代替语义判决。
 
 - **`nodes` 作为长期记忆对象的唯一主输入**
   当前不再接受 `entities/events/assertions/sources` 主抽取 shape，也不建立 fact property index。后续即使扩展 extraction schema，也应避免同一事实在多个字段重复入库。
@@ -393,7 +393,7 @@ SearchResult 当前结构要点：
 - `unconfigured_label_policy` 已从配置和 prompt 渲染路径移除；未配置标签的开放性由抽取 prompt 的通用规则说明。
 - 抽取 prompt 注入 `node_labels.yaml`。
 - Node summary 维护：低于 `k` 时跨来源拼接并重写 node_content 向量；达到 `k` 或 token 上限时强触发 LLM 压缩；无维护 LLM 时显式失败。
-- LocalTriple 维护：同 node 内 normalized S/P 相同触发按 node 批量 LLM 路由，覆盖 `keep_existing/keep_new/keep_both/merge/needs_review`，并验证 retired triples 不进入 node-local-graph 向量文本。
+- LocalTriple 维护：同 node 内 normalized S/P 相同且 object 不同会在首次写入批次内部或后续 merge 时触发按 node 批量 LLM 路由，覆盖 `keep_existing/keep_new/keep_both/merge/needs_review`；无维护 LLM 时显式失败，并验证 retired triples 不进入 node-local-graph 向量文本。
 - 维护 prompt registry 加载 `maintenance.node_summary_compaction` 和 `maintenance.local_triple_merge`。
 - LLM contradiction check 驱动的冲突 fact 退役与 correction edge。
 - `loves/travels_to` 等多值语义由维护 LLM 判为 compatible 时不会被错误退役。

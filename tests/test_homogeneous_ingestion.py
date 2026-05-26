@@ -1073,6 +1073,77 @@ def test_local_triple_maintenance_duplicate_spo_merges_turn_provenance_without_l
     assert distribution["active_by_predicate"] == {"likes": 1}
 
 
+def test_local_triple_maintenance_routes_same_turn_initial_node_conflicts(tmp_path):
+    maintenance_llm = MaintenanceLLM(
+        [
+            {
+                "decisions": [
+                    {
+                        "decision": "keep_both",
+                        "affected_existing_refs": [],
+                        "merged_triple": None,
+                        "rationale": "Both preferences can coexist.",
+                    }
+                ]
+            }
+        ]
+    )
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice likes tea and coffee.",
+                    triples=[
+                        {"subject": "Alice", "predicate": "likes", "object": "tea"},
+                        {"subject": "Alice", "predicate": "likes", "object": "coffee"},
+                    ],
+                )
+            ]
+        ),
+        maintenance_llm=maintenance_llm,
+    )
+    namespace = "local_triple_initial_batch_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("I like tea and coffee.", namespace=namespace)
+    node = memory.store.list_nodes(namespace)[0]
+    memory.close()
+
+    assert maintenance_llm.call_count == 1
+    assert '"object":"coffee"' in maintenance_llm.prompts[0]
+    assert '"object":"tea"' in maintenance_llm.prompts[0]
+    assert [(triple.object, triple.status) for triple in node.local_graph.triples] == [
+        ("tea", "active"),
+        ("coffee", "active"),
+    ]
+    assert all(triple.qualifiers["source_turn_ids"] == ["turn:0"] for triple in node.local_graph.triples)
+    assert node.metadata["maintenance"]["local_triples"]["decision_count"] == 1
+
+
+def test_local_triple_maintenance_requires_llm_for_same_turn_initial_node_conflicts(tmp_path):
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                _single_entity_payload(
+                    "Alice lives in California and San Francisco.",
+                    triples=[
+                        {"subject": "Alice", "predicate": "lives_in", "object": "California"},
+                        {"subject": "Alice", "predicate": "lives_in", "object": "San Francisco"},
+                    ],
+                )
+            ]
+        ),
+    )
+    namespace = "local_triple_initial_requires_llm_ns"
+    memory.reset(namespace)
+
+    with pytest.raises(RuntimeError, match="requires an LLM"):
+        memory.add_memory("I live in California and San Francisco.", namespace=namespace)
+    memory.close()
+
+
 def test_local_triple_maintenance_keep_both_preserves_compatible_values(tmp_path):
     maintenance_llm = MaintenanceLLM(
         [

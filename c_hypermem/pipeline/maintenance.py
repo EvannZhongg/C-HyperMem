@@ -94,12 +94,21 @@ class GraphMaintenance:
         incoming: MemoryNode,
         context: AssemblyContext,
     ) -> None:
-        _initialize_triple_provenance(incoming, context)
+        self._route_incoming_local_triples(existing, incoming, list(incoming.local_graph.triples), context)
+
+    def _route_incoming_local_triples(
+        self,
+        node: MemoryNode,
+        source_node: MemoryNode,
+        incoming_triples: list[LocalTriple],
+        context: AssemblyContext,
+    ) -> None:
         merge_tasks: list[LocalTripleMergeTask] = []
-        for index, incoming_triple in enumerate(incoming.local_graph.triples):
+        for index, incoming_triple in enumerate(incoming_triples):
+            _initialize_triple_provenance_for_triple(incoming_triple, source_node, context)
             same_subject = [
                 triple
-                for triple in existing.local_graph.triples
+                for triple in node.local_graph.triples
                 if triple.status == "active" and _triple_subject_key(triple) == _triple_subject_key(incoming_triple)
             ]
             same_spo = [triple for triple in same_subject if _triple_op_key(triple) == _triple_op_key(incoming_triple)]
@@ -112,7 +121,7 @@ class GraphMaintenance:
                 if _triple_predicate_key(triple) == _triple_predicate_key(incoming_triple)
             ]
             if not candidates or not self.config.maintenance.local_triples.enabled:
-                existing.local_graph.triples.append(incoming_triple)
+                node.local_graph.triples.append(incoming_triple)
                 continue
             if self.llm is None:
                 raise RuntimeError(
@@ -128,9 +137,9 @@ class GraphMaintenance:
 
         if not merge_tasks:
             return
-        decisions = self._decide_local_triple_merges(existing, merge_tasks, context)
+        decisions = self._decide_local_triple_merges(node, merge_tasks, context)
         for task, decision in zip(merge_tasks, decisions, strict=True):
-            self._apply_local_triple_decision(existing, task.incoming_triple, task.candidates, decision, context)
+            self._apply_local_triple_decision(node, task.incoming_triple, task.candidates, decision, context)
 
     def _decide_local_triple_merge(
         self,
@@ -270,7 +279,9 @@ class GraphMaintenance:
         return rendered
 
     def _initialize_new_node(self, node: MemoryNode, context: AssemblyContext) -> MemoryNode:
-        _initialize_triple_provenance(node, context)
+        incoming_triples = list(node.local_graph.triples)
+        node.local_graph.triples = []
+        self._route_incoming_local_triples(node, node, incoming_triples, context)
         _refresh_local_triple_distribution(node, context)
         if not self.config.maintenance.node_summary.enabled:
             return node
@@ -623,11 +634,6 @@ def _mark_edge_description_compacted(edge: HyperEdge, trigger: dict[str, Any], c
     state["last_compacted_turn"] = context.current_turn
     state["last_compaction_trigger"] = trigger
     _set_edge_description_state(edge, state)
-
-
-def _initialize_triple_provenance(node: MemoryNode, context: AssemblyContext) -> None:
-    for triple in node.local_graph.triples:
-        _initialize_triple_provenance_for_triple(triple, node, context)
 
 
 def _initialize_triple_provenance_for_triple(

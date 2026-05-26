@@ -351,11 +351,11 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
 - 已完成：`NodeBuilder.build_node()` 消费 `ExtractedNode`，`LocalGraphBuilder` 只规范化和去重 node 内 triples，不再按 event/fact/entity 写死 triples。
 - 已完成：`GraphAssembler` 按 `edge_summary_refs` 反向组装 description-only HyperEdge，并从 `context.metadata.turn_ids` 写入 MemoryNode / HyperEdge metadata 的 `source_turn_ids`。
 - 已删除：`ExtractedSource`、`ExtractedEntity`、`ExtractedEvent`、`EventParticipant`、`ExtractedAssertion`。
-- 已删除：旧 `entity_resolution.py` 和旧 fact-oriented `GraphMaintenance` 主体。当前 `GraphMaintenance` 已作为同构节点维护组件接入 node merge。
+- 已删除：旧 `entity_resolution.py` 和旧 fact-oriented `GraphMaintenance` 主体。当前 `GraphMaintenance` 已作为同构节点维护组件接入 node 初始化与 merge。
 - 已完成：存储与索引调整。SQLite 新 schema 不再创建旧 `edge_type/relation/polarity/role/role_in_edge/edge_relation/fact_property_index` 路径；向量 payload 清理旧 edge role 字段，turn dialogue payload 使用 `dialogue_roles`。
 - 已完成：移除旧 fact/property/typed-edge 维护 prompt 资源和 registry 入口，新增 `maintenance/node_summary_compaction.md` 与 `maintenance/local_triple_merge.md`。
 - 已完成：Node summary 维护第一阶段。同一 node 的不同来源 summary 在低于 `k` 时拼接；达到 `maintenance.node_summary.compact_after_k_sources` 或 token 上限时强触发 LLM 压缩；无维护 LLM 时显式失败。
-- 已完成：LocalTriple 维护第一阶段。同一 node 内先匹配 normalized S；S/P/O 完全相同只合并系统来源 provenance，不触发 LLM；S/P 相同且 O 不同才触发 LLM 路由，支持 keep_existing、keep_new、keep_both、merge、needs_review；无维护 LLM 时显式失败。
+- 已完成：LocalTriple 维护第一阶段。同一 node 的新建初始批次和后续 merge 都会先匹配 normalized S；S/P/O 完全相同不触发 LLM，S/P 相同且 O 不同才触发 LLM 路由，因而一个 turn 内首次抽出的同 S/P 多值 triples 也会进入 `maintenance/local_triple_merge.md`；支持 keep_existing、keep_new、keep_both、merge、needs_review；无维护 LLM 时显式失败。
 - 已完成：移除当前 EdgeCluster 维护配置入口；EdgeCluster 概念改为共享 `member_node_id` 的 HyperEdge 聚合视图，不包含相似度召回、cluster merge、冲突健康检查或后台维护。
 - 已完成：当前检索代码已适配同构节点与 description-only HyperEdge，不再依赖 edge_type/relation/roles；SQLite FTS、node content vector、node local graph vector 与 HyperEdge description vector 已接入。
 - 已完成：Dual-Track Edge-Level RRF 已落地。FTS / node_content / node_local_graph 的 node RRF 结果转换为 Track 1 edge ranking；HED 作为 Track 2 direct edge ranking；最终在 edge-level RRF 汇合并 Top K2 剪枝后再做 controlled cluster ripple。HED 不再投影到 node-level RRF。

@@ -23,17 +23,17 @@
   -> LocalGraphBuilder 规范化和去重 node 内 triples
   -> edge_summary_refs 反向组装 description-only HyperEdge
   -> EdgeClusterBuilder 为共享成员节点的 HyperEdges 建立 EdgeCluster 关系
-  -> GraphMaintenance 在 node merge 时维护 Node summary 和 LocalTriple
+  -> GraphMaintenance 在 node 初始化或 merge 时维护 LocalTriple，并在 node merge 时维护跨来源 summary
   -> 写入 SQLite / FTS / 向量索引
 ```
 
 当前维护能力是**轻量、保守、无规则兜底**的：
 
-- `GraphMaintenance` 已从 no-op post-assembly hook 改为 node merge 维护组件。
+- `GraphMaintenance` 已从 no-op post-assembly hook 改为 node 写入维护组件。
 - 当前主写入路径不调用旧 `fact_merge.md`、`contradiction_check.md`、`edge_merge.md`，这些旧 prompt 已删除。
 - 当前阶段目标不是补齐重型全局维护，而是在每个流程先形成可运行、可解释的轻量实现：
   - `MemoryNode`: deterministic `node_id` / entity alias 精确复用，summary 来源驱动拼接与阈值压缩。
-  - `LocalTriple`: 同 node 内 normalized S/P 候选按 node 批量触发一次 LLM 路由；完全同 SPO 只合并系统 provenance。
+  - `LocalTriple`: 新 node 初始批次或后续 merge 中，同 node 内 normalized S/P 多值候选按 node 批量触发一次 LLM 路由；完全同 SPO 不触发语义维护。
   - `HyperEdge`: 相同成员节点集合生成同一 `edge_id`，同 ID 时合并 description/source metadata 并重写 edge 向量。
   - `EdgeCluster`: 由共享成员节点 + local-triple semantic anchor 形成确定性锚点聚合视图，不作为维护对象。
   - `Index`: 对 active objects 做 upsert；对当前已产生的 retired node 有 node vector 删除入口。
@@ -43,7 +43,7 @@
   - LLM 只输出压缩后的 `summary`；系统继续负责 ID、来源、触发条件、状态 metadata 和索引重写。
   - 达到触发条件但没有维护 LLM 时显式失败，不做规则兜底。
 - LocalTriple 维护已接入：
-  - 同一 node 内 incoming triple 先匹配 existing active triples 的 normalized subject，再匹配 normalized predicate；只要 `(subject, predicate)` 相同即进入该 node 的批量维护任务。
+  - 同一 node 内 incoming triple 先匹配已接受的 active triples 的 normalized subject，再匹配 normalized predicate；候选可以来自既有存储，也可以来自当前一次抽取中更早接受的 triple。`(subject, predicate)` 相同且 object 不同时进入该 node 的批量维护任务。
   - LLM 一次输出与批量冲突数组等长、顺序一致的 `LocalTripleMergeDecision` JSON 数组；单个决策为 `keep_existing/keep_new/keep_both/merge/needs_review`，系统负责退役、追加、保存 merged triple、标记 uncertain 和索引重写。
   - 有同 S/P 候选但没有维护 LLM 时显式失败，不做规则兜底。
 - 不存在旧 `fact_property_index`、`edge_type/relation/polarity/roles`、`role_in_edge/edge_relation` 兼容路径。
@@ -69,7 +69,7 @@
 | Node summary 维护 | `GraphMaintenance.merge_node()` 按系统 `source_turn_ids` 追踪 summary 来源；低于 `k` 时字符串拼接；达到来源数或 token 上限时调用 `node_summary_compaction` prompt 压缩 | 已完成第一阶段 Node summary 维护 |
 | Entity alias 复用 | 仅带 `entity` label 的节点使用 `canonical_text + metadata.aliases` 写入/查询 alias index | 已实现精确复用，不做模糊消歧 |
 | 普通节点复用 | `node_id = hash(namespace + fingerprint)`；同 ID 时合并 labels/attributes/metadata/local_graph | 已实现轻量合并 |
-| LocalGraph 维护 | incoming triples 先按 normalized SPO 去重；同 node merge 时 normalized S/P 相同的冲突按 node 收集，并一次触发 `local_triple_merge` LLM 批量路由 | 已完成轻量 LocalTriple 维护 |
+| LocalGraph 维护 | incoming triples 先按 normalized SPO 去重；新 node 初始批次及后续 merge 中 normalized S/P 相同且 object 不同的冲突按 node 收集，并一次触发 `local_triple_merge` LLM 批量路由 | 已完成轻量 LocalTriple 维护 |
 | HyperEdge 构建 | 由 `edge_summaries[].description` + member nodes 构建；schema/DB 不含 `edge_type/relation` | 已切到 description-only |
 | HyperEdge merge | `edge_id = hash(namespace + sorted(member_node_ids))`；同成员集合复用同 edge，并合并 description/source metadata；description 变化后重写 `hyper_edge_description` 向量 | 已完成轻量同 ID 维护 |
 | EdgeCluster 维护 | 当前不作为维护对象；只保留共享成员节点与 local-triple semantic anchor 的确定性聚合视图，仍不引入 LLM cluster 维护 | 已移除维护入口 |
@@ -96,7 +96,7 @@
 4. 将最近 K 个 turn messages 作为 context，把本次消息作为 target 交给 extractor。
 5. `LLMMemoryExtractor` 或显式 extractor 返回 `MemoryExtraction(nodes, edge_summaries, metadata)`。
 6. `GraphAssembler` 生成 nodes / edges / edge_clusters / edge_cluster_members / entity_aliases。
-7. `GraphAssembler` 在同 node_id / entity alias 复用时调用 `GraphMaintenance.merge_node(...)` 维护 Node summary 和 LocalTriple。
+7. `GraphAssembler` 对新建 node 和同 node_id / entity alias 复用 node 都调用 `GraphMaintenance.merge_node(...)`；LocalTriple 在两种写入中维护，Node summary 的跨来源拼接在复用路径维护。
 8. `Memory._persist_output(...)` 写入 SQLite，并更新 FTS / Qdrant side indexes。
 
 当前实现要点：
@@ -148,6 +148,12 @@ metadata
   - `content` 同理，只有旧 content 为空时才补写。
   - 更新 `updated_at/updated_turn`。
 
+新 node 首次写入时：
+
+- `GraphMaintenance` 会将该 node 初始 triples 通过同一 LocalTriple 路由入口依次接纳。
+- 当前批次中排在前面的 active triple 可以成为后续 incoming triple 的候选；若同 S/P 而 object 不同，会触发 `maintenance.local_triple_merge`，而不是未经语义判断直接同时入库。
+- 完全相同的 normalized SPO 仍由 `LocalGraphBuilder` 的批内去重处理，不触发维护 LLM。
+
 因此当前 summary 维护是**来源驱动、强触发、无兜底**的：
 
 - 低于阈值时仅拼接不同来源 summary，并随写入重建合并后的 `node_content` 向量。
@@ -192,9 +198,9 @@ metadata
 
 - 每个 node 都可以携带 `ExtractedNode.triples`。
 - `LocalGraphBuilder.build_node()` 对 incoming triples 按 normalized `(subject, predicate, object)` 去重。
-- `GraphMaintenance.merge_node()` 对 different S/P triples 直接追加。
-- 当 incoming triple 和 existing active triple 的 normalized `(subject, predicate, object)` 完全相同时，不调用 LLM，只合并系统来源 provenance。
-- 当 incoming triple 和 existing active triple 的 normalized `(subject, predicate)` 相同但 object 不同时，收集为该 node 的批量维护任务；同一 node 下所有任务通过一次 `maintenance/local_triple_merge.md` 调用处理。
+- `GraphMaintenance` 对新 node 初始 triples 与 merge 路径的 incoming triples 使用同一写入路由；different S/P triples 直接追加。
+- 当 merge 路径的 incoming triple 和既有 active triple 的 normalized `(subject, predicate, object)` 完全相同时，不调用 LLM，只合并系统来源 provenance；首次抽取批次内的完全重复 SPO 已由 `LocalGraphBuilder` 去重。
+- 当 incoming triple 和已接受 active triple 的 normalized `(subject, predicate)` 相同但 object 不同时，收集为该 node 的批量维护任务；候选可以来自此前 turn，也可以来自当前 turn 同一抽取批次中排在前面的 triple。同一 node 下本次形成的任务通过一次 `maintenance/local_triple_merge.md` 调用处理。
 - LLM 返回一个与输入冲突数组等长、顺序一致的 JSON 数组；单个路由动作：
   - `keep_existing`: 丢弃 incoming。
   - `keep_new`: 退役 affected existing，保存 incoming。
@@ -413,7 +419,7 @@ needs_review
 
 ### 4.3 LocalTriple 维护
 
-当前 LocalTriple 已支持同 S/P 候选的轻量批量 LLM 路由。下一阶段可增加：
+当前 LocalTriple 已支持同 S/P 多值候选的轻量批量 LLM 路由，且覆盖新 node 首次抽取批次内部与后续 merge 两种来源。下一阶段可增加：
 
 - triple-level superseded_by / invalidated_by。
 - valid_time / qualifier 维护。

@@ -867,7 +867,7 @@ def _refresh_local_triple_distribution(node: MemoryNode, context: AssemblyContex
 
     for triple in triples:
         status_counts[triple.status] = status_counts.get(triple.status, 0) + 1
-        if triple.scope_edge_id or triple.scope_cluster_id:
+        if triple.scope_edge_ids or triple.scope_cluster_id:
             scoped_count += 1
         if triple.status != "active":
             continue

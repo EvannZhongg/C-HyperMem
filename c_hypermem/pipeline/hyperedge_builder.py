@@ -74,10 +74,37 @@ class BasicHyperEdgeBuilder:
 
 
 def _scope_member_triples(edge: HyperEdge, member_nodes: list[MemoryNode]) -> None:
+    edge_source_turn_ids = _strings(edge.metadata.get("source_turn_ids"))
     for node in member_nodes:
         for triple in node.local_graph.triples:
+            if edge_source_turn_ids and not set(edge_source_turn_ids).intersection(
+                _strings(triple.qualifiers.get("source_turn_ids"))
+            ):
+                continue
             qualifiers = dict(triple.qualifiers)
-            qualifiers.setdefault("scope_edge_id", edge.edge_id)
-            qualifiers.setdefault("edge_description", edge.description)
+            scope_edge_ids = _unique_strings([*triple.scope_edge_ids, *_strings(qualifiers.get("scope_edge_ids"))])
+            if edge.edge_id not in scope_edge_ids:
+                scope_edge_ids.append(edge.edge_id)
+            qualifiers["scope_edge_ids"] = scope_edge_ids
+
+            edge_descriptions = qualifiers.get("scope_edge_descriptions")
+            edge_descriptions = dict(edge_descriptions) if isinstance(edge_descriptions, dict) else {}
+            if edge.description.strip():
+                edge_descriptions[edge.edge_id] = edge.description
+            if edge_descriptions:
+                qualifiers["scope_edge_descriptions"] = edge_descriptions
+
             triple.qualifiers = qualifiers
-            triple.scope_edge_id = edge.edge_id
+            triple.scope_edge_ids = scope_edge_ids
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if value in (None, "", [], {}):
+        return []
+    return [str(value).strip()]
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))

@@ -304,7 +304,7 @@ def collect_node_local_graph_index_items(nodes: Sequence[MemoryNode]) -> list[No
                     "predicate": triple.predicate,
                     "object": triple.object,
                     "status": triple.status,
-                    "scope_edge_id": triple.scope_edge_id,
+                    "scope_edge_ids": triple.scope_edge_ids,
                     "scope_cluster_id": triple.scope_cluster_id,
                     "superseded_by": triple.superseded_by,
                     "invalidated_by": triple.invalidated_by,

@@ -117,7 +117,7 @@ def test_sqlite_hyper_edges_use_member_table(tmp_path):
     assert "member_policy" not in edge_columns
     assert {"edge_id", "node_id", "role", "weight"} <= member_columns
     assert {"cluster_id", "cluster_fingerprint", "canonical_description", "conflict_state"} <= cluster_columns
-    assert {"scope_edge_id", "scope_cluster_id", "role_in_edge", "edge_relation"} <= triple_columns
+    assert {"scope_edge_ids_json", "scope_cluster_id"} <= triple_columns
     assert {"subject_node_id", "fact_node_id"} <= fact_index_columns
     assert {"node_id"} <= alias_index_columns
     assert "entity_id" not in alias_index_columns

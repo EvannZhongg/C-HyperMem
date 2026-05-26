@@ -207,10 +207,10 @@ metadata
 - 如果出现同 S/P 候选但没有维护 LLM，写入显式失败。
 - SQLite `triples` 表持久化 node 内 triples。
 - 无论路由结果是 `keep_existing/keep_new/keep_both/merge/needs_review` 哪一种，该 node 都会在本次写入后重写 `node_local_graph` 向量；非 active triples 保留在 canonical store 中，但不会进入 SQLite FTS local_graph 文本、node-local-graph 向量文本或检索返回的 active triples。
-- `HyperEdge` scope 会写入 triple 的：
-  - `scope_edge_id`
-  - qualifiers 中的 `scope_edge_id`
-  - qualifiers 中的 `edge_description`
+- `HyperEdge` scope 会以追加方式写入本轮触达 triple 的：
+  - `scope_edge_ids`
+  - qualifiers 中的 `scope_edge_ids`
+  - qualifiers 中按 edge id 记录的 `scope_edge_descriptions`
 
 已删除：
 

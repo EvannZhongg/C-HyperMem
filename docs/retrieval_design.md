@@ -153,7 +153,7 @@ S_edge = max(S_node for node in edge_nodes)
 - edge identity、description、system metadata。
 - edge-level score 与可解释 score parts。
 - edge 内成员 nodes。
-- 每个 node 的内容、分数来源和 triples。
+- 每个 node 的内容、分数来源和 triples；triple 的 HyperEdge 上下文使用 `scope_edge_ids`，同一个 triple 可以保留多个 edge scope。
 - 每个 node 的系统来源字段，例如 `source_turn_ids`、`node_metadata`。
 - 如果 edge 属于 EdgeCluster，附带 cluster id 和 description variants。
 

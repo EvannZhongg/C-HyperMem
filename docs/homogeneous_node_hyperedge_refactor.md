@@ -199,10 +199,14 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
 需要调整：
 
 - `nodes.local_graph_json` 新写入不产生 `attributes/roles`。
-- `triples.role_in_edge` 已删除；新的 scope 信息优先进入 qualifiers：
+- `triples.role_in_edge` 已删除；新的 edge scope 信息必须是多值，避免共享 `MemoryNode` 在新建 HyperEdge 时覆盖旧三元组溯源。系统只给本轮触达的 triples 追加当前 edge：
 
 ```json
-{"scope_edge_id": "...", "scope_cluster_id": "...", "edge_description": "..."}
+{
+  "scope_edge_ids": ["edge:..."],
+  "scope_edge_descriptions": {"edge:...": "..."},
+  "scope_cluster_id": "..."
+}
 ```
 
 - `hyper_edges.polarity` 已删除。

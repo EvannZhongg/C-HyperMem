@@ -51,7 +51,7 @@ class LocalTriple(BaseModel):
     predicate: str
     object: str
     status: MemoryStatus = "active"
-    scope_edge_id: str | None = None
+    scope_edge_ids: list[str] = Field(default_factory=list)
     scope_cluster_id: str | None = None
     superseded_by: str | None = None
     invalidated_by: str | None = None

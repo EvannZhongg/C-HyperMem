@@ -8,9 +8,9 @@ from c_hypermem.utils.text import normalize_text
 
 SYSTEM_TRIPLE_QUALIFIER_KEYS = frozenset(
     {
-        "scope_edge_id",
+        "scope_edge_ids",
         "scope_cluster_id",
-        "edge_description",
+        "scope_edge_descriptions",
         "maintenance_status_reason",
         "maintenance_updated_turn",
         "maintenance_updated_at",

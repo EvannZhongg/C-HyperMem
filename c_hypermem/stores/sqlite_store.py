@@ -138,7 +138,7 @@ class SQLiteStore:
                         """
                         INSERT INTO triples (
                             namespace, triple_id, owner_node_id, subject, predicate, object,
-                            status, scope_edge_id, scope_cluster_id,
+                            status, scope_edge_ids_json, scope_cluster_id,
                             superseded_by, invalidated_by, qualifiers_json, metadata_json
                         )
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -148,7 +148,7 @@ class SQLiteStore:
                             predicate = excluded.predicate,
                             object = excluded.object,
                             status = excluded.status,
-                            scope_edge_id = excluded.scope_edge_id,
+                            scope_edge_ids_json = excluded.scope_edge_ids_json,
                             scope_cluster_id = excluded.scope_cluster_id,
                             superseded_by = excluded.superseded_by,
                             invalidated_by = excluded.invalidated_by,
@@ -163,7 +163,7 @@ class SQLiteStore:
                             triple.predicate,
                             triple.object,
                             triple.status,
-                            triple.scope_edge_id,
+                            _to_json(triple.scope_edge_ids),
                             triple.scope_cluster_id,
                             triple.superseded_by,
                             triple.invalidated_by,
@@ -588,7 +588,7 @@ class SQLiteStore:
         placeholders = ",".join("?" for _ in normalized_values)
         rows = self.conn.execute(
             f"""
-            SELECT triple_id, owner_node_id, scope_edge_id, subject, object
+            SELECT triple_id, owner_node_id, scope_edge_ids_json, subject, object
             FROM triples
             WHERE namespace = ?
               AND status = 'active'
@@ -602,15 +602,16 @@ class SQLiteStore:
         for row in rows:
             if normalize_text(row["subject"]) not in normalized_set and normalize_text(row["object"]) not in normalized_set:
                 continue
-            records.append(
-                TripleEndpointRecord(
-                    triple_id=row["triple_id"],
-                    owner_node_id=row["owner_node_id"],
-                    scope_edge_id=row["scope_edge_id"],
-                    subject=row["subject"],
-                    object=row["object"],
+            for edge_id in _from_json(row["scope_edge_ids_json"], []):
+                records.append(
+                    TripleEndpointRecord(
+                        triple_id=row["triple_id"],
+                        owner_node_id=row["owner_node_id"],
+                        edge_id=str(edge_id),
+                        subject=row["subject"],
+                        object=row["object"],
+                    )
                 )
-            )
         return records
 
     def stats(self, namespace: str) -> dict[str, int]:
@@ -752,7 +753,7 @@ class SQLiteStore:
                         predicate TEXT NOT NULL,
                         object TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'active',
-                        scope_edge_id TEXT,
+                        scope_edge_ids_json TEXT NOT NULL,
                         scope_cluster_id TEXT,
                         superseded_by TEXT,
                         invalidated_by TEXT,
@@ -763,9 +764,6 @@ class SQLiteStore:
 
                     CREATE INDEX IF NOT EXISTS idx_triples_owner
                         ON triples(namespace, owner_node_id);
-
-                    CREATE INDEX IF NOT EXISTS idx_triples_scope_edge
-                        ON triples(namespace, scope_edge_id);
 
                     CREATE INDEX IF NOT EXISTS idx_triples_scope_cluster
                         ON triples(namespace, scope_cluster_id);

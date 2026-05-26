@@ -134,6 +134,77 @@ def test_edge_cluster_groups_edges_with_shared_member_node(tmp_path):
     assert {member.edge_id for member in shared_members} == {edge.edge_id for edge in edges}
 
 
+def test_shared_node_triples_keep_original_scope_when_new_edge_reuses_node(tmp_path):
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                {
+                    "edge_summaries": [{"ref": "e1", "description": "Andrew's pet context."}],
+                    "nodes": [
+                        {
+                            "ref": "andrew",
+                            "labels": ["entity", "person"],
+                            "canonical_text": "Andrew",
+                            "summaries": ["Andrew is a person."],
+                            "triples": [{"subject": "Andrew", "predicate": "has_pet", "object": "Toby"}],
+                            "edge_summary_refs": ["e1"],
+                            "metadata": {"aliases": ["Andrew"]},
+                        },
+                        {
+                            "ref": "toby",
+                            "labels": ["entity", "pet"],
+                            "canonical_text": "Toby",
+                            "summaries": ["Toby is Andrew's pet."],
+                            "triples": [{"subject": "Toby", "predicate": "is_a", "object": "pet"}],
+                            "edge_summary_refs": ["e1"],
+                        },
+                    ],
+                },
+                {
+                    "edge_summaries": [{"ref": "e2", "description": "Andrew's tool context."}],
+                    "nodes": [
+                        {
+                            "ref": "andrew",
+                            "labels": ["entity", "person"],
+                            "canonical_text": "Andrew",
+                            "summaries": ["Andrew uses Obsidian."],
+                            "triples": [{"subject": "Andrew", "predicate": "uses", "object": "Obsidian"}],
+                            "edge_summary_refs": ["e2"],
+                            "metadata": {"aliases": ["Andrew"]},
+                        },
+                        {
+                            "ref": "obsidian",
+                            "labels": ["entity", "tool"],
+                            "canonical_text": "Obsidian",
+                            "summaries": ["Obsidian is Andrew's tool."],
+                            "triples": [{"subject": "Obsidian", "predicate": "is_a", "object": "tool"}],
+                            "edge_summary_refs": ["e2"],
+                        },
+                    ],
+                },
+            ]
+        ),
+    )
+    namespace = "shared_node_scope_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Andrew has a pet named Toby.", namespace=namespace)
+    first_edge = memory.store.list_edges(namespace)[0]
+    memory.add_memory("Andrew uses Obsidian.", namespace=namespace)
+    andrew = next(node for node in memory.store.list_nodes(namespace) if node.canonical_text == "Andrew")
+    edges_by_description = {edge.description: edge for edge in memory.store.list_edges(namespace)}
+    memory.close()
+
+    pet_scope = next(triple.scope_edge_ids for triple in andrew.local_graph.triples if triple.predicate == "has_pet")
+    tool_scope = next(triple.scope_edge_ids for triple in andrew.local_graph.triples if triple.predicate == "uses")
+    tool_edge = edges_by_description["Andrew's tool context."]
+
+    assert pet_scope == [first_edge.edge_id]
+    assert tool_scope == [tool_edge.edge_id]
+    assert first_edge.edge_id != tool_edge.edge_id
+
+
 def test_edge_cluster_groups_edges_with_semantic_anchor_from_local_triples(tmp_path):
     memory = Memory.from_config(
         {"storage": {"path": str(tmp_path / "memory.sqlite3")}},

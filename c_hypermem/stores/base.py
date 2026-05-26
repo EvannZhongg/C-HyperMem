@@ -17,7 +17,7 @@ from c_hypermem.schema import (
 class TripleEndpointRecord:
     triple_id: str
     owner_node_id: str
-    scope_edge_id: str | None
+    edge_id: str
     subject: str
     object: str
 

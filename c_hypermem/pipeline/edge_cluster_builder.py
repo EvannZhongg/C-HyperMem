@@ -149,12 +149,12 @@ class BasicEdgeClusterBuilder:
                     anchor_value = normalize_text(value)
                     if not anchor_value or anchor_value not in endpoint_value_set:
                         continue
-                    if not record.scope_edge_id or record.scope_edge_id in current_edge_ids:
+                    if record.edge_id in current_edge_ids:
                         continue
                     occurrence = AnchorOccurrence(
                         basis="semantic_anchor",
                         anchor_value=anchor_value,
-                        edge_id=record.scope_edge_id,
+                        edge_id=record.edge_id,
                         node_id=record.owner_node_id,
                         triple_id=record.triple_id,
                         position=position,
@@ -306,6 +306,8 @@ def _semantic_anchor_occurrences_from_nodes(
                 continue
             for triple in node.local_graph.triples:
                 if triple.status != "active" or not triple.triple_id:
+                    continue
+                if edge.edge_id not in triple.scope_edge_ids:
                     continue
                 for position, value in (("subject", triple.subject), ("object", triple.object)):
                     anchor_value = normalize_text(value)

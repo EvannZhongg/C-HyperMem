@@ -16,9 +16,10 @@ from c_hypermem.schema import (
     MemoryNode,
     TimeBundle,
 )
+from c_hypermem.stores.base import TripleEndpointRecord
 from c_hypermem.utils.ids import make_local_triple_id, make_member_signature
 from c_hypermem.utils.time import utc_now_iso
-from c_hypermem.utils.text import tokenize
+from c_hypermem.utils.text import normalize_text, tokenize
 
 
 class SQLiteStore:
@@ -581,6 +582,38 @@ class SQLiteStore:
             [namespace, *edge_ids],
         ).fetchall()
         return [_cluster_from_row(row) for row in rows]
+
+    def find_triples_by_endpoints(self, namespace: str, endpoint_values: list[str]) -> list[TripleEndpointRecord]:
+        normalized_values = sorted({normalize_text(value) for value in endpoint_values if normalize_text(value)})
+        if not normalized_values:
+            return []
+        placeholders = ",".join("?" for _ in normalized_values)
+        rows = self.conn.execute(
+            f"""
+            SELECT triple_id, owner_node_id, scope_edge_id, subject, object
+            FROM triples
+            WHERE namespace = ?
+              AND status = 'active'
+              AND (lower(subject) IN ({placeholders}) OR lower(object) IN ({placeholders}))
+            ORDER BY rowid
+            """,
+            [namespace, *normalized_values, *normalized_values],
+        ).fetchall()
+        records: list[TripleEndpointRecord] = []
+        normalized_set = set(normalized_values)
+        for row in rows:
+            if normalize_text(row["subject"]) not in normalized_set and normalize_text(row["object"]) not in normalized_set:
+                continue
+            records.append(
+                TripleEndpointRecord(
+                    triple_id=row["triple_id"],
+                    owner_node_id=row["owner_node_id"],
+                    scope_edge_id=row["scope_edge_id"],
+                    subject=row["subject"],
+                    object=row["object"],
+                )
+            )
+        return records
 
     def stats(self, namespace: str) -> dict[str, int]:
         result: dict[str, int] = {}

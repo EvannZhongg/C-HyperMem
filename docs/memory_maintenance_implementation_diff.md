@@ -4,7 +4,7 @@
 
 这里的“memory 维护”主要指：
 
-- 写入时对已有 `MemoryNode`、description-only `HyperEdge` 和索引的复用、更新、退役与冲突处理。`EdgeCluster` 当前只作为共享成员节点形成的聚合视图，不作为维护对象。
+- 写入时对已有 `MemoryNode`、description-only `HyperEdge` 和索引的复用、更新、退役与冲突处理。`EdgeCluster` 当前作为确定性锚点聚合视图，不作为维护对象。
 - 检索访问后对 memory activation time 的更新。
 - 与维护相关的 prompt、配置、持久化和向量索引清理。
 
@@ -35,7 +35,7 @@
   - `MemoryNode`: deterministic `node_id` / entity alias 精确复用，summary 来源驱动拼接与阈值压缩。
   - `LocalTriple`: 同 node 内 normalized S/P 候选按 node 批量触发一次 LLM 路由；完全同 SPO 只合并系统 provenance。
   - `HyperEdge`: 相同成员节点集合生成同一 `edge_id`，同 ID 时合并 description/source metadata 并重写 edge 向量。
-  - `EdgeCluster`: 共享成员节点形成聚合视图，不作为维护对象。
+  - `EdgeCluster`: 由共享成员节点 + local-triple semantic anchor 形成确定性锚点聚合视图，不作为维护对象。
   - `Index`: 对 active objects 做 upsert；对当前已产生的 retired node 有 node vector 删除入口。
 - Node summary 维护已接入：
   - 同一 node 的不同 `source_turn_ids` summary 在低于阈值时直接拼接。
@@ -56,7 +56,7 @@
 
 - 还没有统一 MemoryNode merge/update/conflict 的 LLM 维护链；当前仅完成 Node summary 和 LocalTriple 维护。
 - HyperEdge 当前只做同 `edge_id` 的轻量复用和 description/source metadata 合并；向量召回候选、LLM edge merge、成员追加和版本化属于未来计划，不是当前主要目标。
-- EdgeCluster 只做共享成员节点的确定性聚合视图，没有维护配置、后台 cluster merge 或冲突健康检查。
+- EdgeCluster 当前只做确定性锚点聚合视图，没有维护配置、后台 cluster merge 或冲突健康检查；锚点包括共享成员节点和 subject/object 端点重合。
 - access maintenance 只更新命中 nodes，不更新 HyperEdge / EdgeCluster。
 - `time.relative_decay`、`access_boost`、temporal filter 尚未进入评分和维护流程。
 
@@ -72,7 +72,7 @@
 | LocalGraph 维护 | incoming triples 先按 normalized SPO 去重；同 node merge 时 normalized S/P 相同的冲突按 node 收集，并一次触发 `local_triple_merge` LLM 批量路由 | 已完成轻量 LocalTriple 维护 |
 | HyperEdge 构建 | 由 `edge_summaries[].description` + member nodes 构建；schema/DB 不含 `edge_type/relation` | 已切到 description-only |
 | HyperEdge merge | `edge_id = hash(namespace + sorted(member_node_ids))`；同成员集合复用同 edge，并合并 description/source metadata；description 变化后重写 `hyper_edge_description` 向量 | 已完成轻量同 ID 维护 |
-| EdgeCluster 维护 | 当前不作为维护对象；只保留共享成员节点的确定性聚合视图 | 已移除维护入口 |
+| EdgeCluster 维护 | 当前不作为维护对象；只保留共享成员节点与 local-triple semantic anchor 的确定性聚合视图，仍不引入 LLM cluster 维护 | 已移除维护入口 |
 | 维护 prompt | 旧 fact/typed-edge prompts 已删除；当前保留 `maintenance.node_summary_compaction` 和 `maintenance.local_triple_merge` | 已清理旧主路径 prompt |
 | 退役/冲突 | 当前主路径没有 node conflict 判断、retire/invalidated 维护链 | 未接入 |
 | 向量索引维护 | active nodes/edges/clusters 会 upsert；node summary/local graph/edge description 变化会用稳定 point id 覆盖；retired nodes 的 node vectors 有删除入口 | 轻量 upsert 已接入，完整退役/删除链路未完成 |
@@ -269,11 +269,15 @@ metadata
 
 当前行为：
 
-- EdgeCluster 是共享成员节点的 HyperEdge 聚合视图。
+- EdgeCluster 当前是确定性锚点 HyperEdge 聚合视图。
 - 两条 HyperEdge 只要共享至少一个 `member_node_id`，就可以进入同一 EdgeCluster。
+- 除共享 member node 外，如果两条 HyperEdge 的成员 node 下 active LocalTriples 出现 normalized subject/object 端点重合，也可以进入 EdgeCluster。端点 reason 包括 `subject_subject`、`object_object`、`subject_object`、`object_subject`。
+- `BasicEdgeClusterBuilder` 统一使用 `AnchorKey/AnchorOccurrence` 构建 shared-node 与 semantic-anchor clusters；两类 cluster 共享同一套 fingerprint、metadata merge、description variant append 和 `EdgeClusterMember` 去重流程。
+- 示例：edge A 的某个成员 node 有 `S1-P1-O1`，edge B 的某个成员 node 有 `S2-P2-O2`；如果 `O1 == S2`，则保持两个 triples 仍为单跳表达，同时建立一个 `semantic_anchor` cluster，把两条 edge 组织到同一检索视图中。
+- 如果同一组 edge 同时共享 member node，且还存在 `S-S` 或 `S-O/O-S/O-O` 等多个端点锚点，应在 cluster metadata 中保留多个 `cluster_reasons` / `anchor_occurrences`，并对 `EdgeClusterMember(cluster_id, edge_id)` 做确定性去重。
 - EdgeCluster 不触发 HyperEdge merge，也不判断支持、更新、冲突关系。
 - `description_variants` 只作为检索上下文资产保存，不作为 cluster 相似度合并依据。
-- `EdgeClusterMember.relation_to_cluster` 已移除；cluster 是共享节点形成的事实通过 `EdgeCluster.cluster_labels=["shared_node"]` 与 `metadata.shared_node_ids` 表达。
+- `EdgeClusterMember.relation_to_cluster` 已移除；cluster 成立依据通过 `EdgeCluster.cluster_labels` 与 metadata 表达。shared-node cluster 使用 `cluster_labels=["shared_node"]` 与 `metadata.shared_node_ids`；semantic-anchor cluster 使用 `cluster_labels=["semantic_anchor"]` 与 `metadata.cluster_basis/anchor_value/anchor_positions/anchor_occurrences/cluster_reasons`。
 
 当前没有：
 
@@ -469,9 +473,11 @@ needs_review
 - 不做 EdgeCluster conflict health check。
 - 不引入后台维护调度器。
 
-EdgeCluster 的职责只保留为共享节点聚合：
+EdgeCluster 的职责只保留为确定性锚点聚合：
 
 - 共享 `member_node_id` 的 HyperEdges 可以进入同一 EdgeCluster。
+- active LocalTriples 的 subject/object 端点规范化后相同，也可以形成 semantic-anchor EdgeCluster。
+- semantic anchor 只消费已有 triples，不从原文额外抽取，不重写 `S-P-O` 结构。
 - EdgeCluster 聚合不等于 HyperEdge merge。
 - 语义冲突、更新和合并应由具体 `MemoryNode` / `HyperEdge` 维护链路处理，而不是由 cluster 级状态机处理。
 

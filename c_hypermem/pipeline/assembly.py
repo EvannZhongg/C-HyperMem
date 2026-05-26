@@ -64,6 +64,7 @@ class GraphAssembler:
         if self.config.edge_clusters.enabled:
             clusters, cluster_members = self.edge_cluster_builder.build(
                 edges,
+                nodes=list(nodes_by_id.values()),
                 namespace=context.namespace,
                 metadata=context.metadata,
                 current_turn=context.current_turn,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from c_hypermem.schema import (
@@ -10,6 +11,15 @@ from c_hypermem.schema import (
     Message,
     MemoryNode,
 )
+
+
+@dataclass(frozen=True)
+class TripleEndpointRecord:
+    triple_id: str
+    owner_node_id: str
+    scope_edge_id: str | None
+    subject: str
+    object: str
 
 
 class MemoryStore(Protocol):
@@ -57,6 +67,8 @@ class MemoryStore(Protocol):
     def get_incident_edges(self, namespace: str, node_ids: list[str]) -> list[HyperEdge]: ...
 
     def get_edge_clusters_for_edges(self, namespace: str, edge_ids: list[str]) -> list[EdgeCluster]: ...
+
+    def find_triples_by_endpoints(self, namespace: str, endpoint_values: list[str]) -> list[TripleEndpointRecord]: ...
 
     def upsert_entity_aliases(self, aliases: list[EntityAliasIndexEntry]) -> None: ...
 

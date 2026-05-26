@@ -107,6 +107,7 @@ class IngestionPipeline:
         if self.edge_cluster_builder is not None:
             clusters, members = self.edge_cluster_builder.build(
                 edges,
+                nodes=nodes,
                 namespace=namespace,
                 metadata=metadata,
                 current_turn=current_turn,

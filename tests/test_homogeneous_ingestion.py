@@ -83,7 +83,7 @@ def test_ingestion_builds_nodes_and_description_only_hyperedges(tmp_path):
     assert all("edge_summary_refs" in edge.metadata for edge in edges)
     assert all(edge.node_ids for edge in edges)
     assert stats["entity_aliases"] >= 1
-    assert len(clusters) == 1
+    assert any(cluster.cluster_labels == ["shared_node"] for cluster in clusters)
     assert results
     assert "Alice prefers morning interviews" in results[0]["content"]
     assert "edge_type" not in results[0]["metadata"]
@@ -108,8 +108,9 @@ def test_edge_cluster_groups_edges_with_shared_member_node(tmp_path):
     memory.close()
 
     assert len(edges) == 2
-    assert len(clusters) == 1
-    cluster = clusters[0]
+    shared_clusters = [cluster for cluster in clusters if cluster.cluster_labels == ["shared_node"]]
+    assert len(shared_clusters) == 1
+    cluster = shared_clusters[0]
     shared_node_ids = cluster.metadata["shared_node_ids"]
     assert len(shared_node_ids) == 1
     shared_node_id = shared_node_ids[0]
@@ -117,7 +118,70 @@ def test_edge_cluster_groups_edges_with_shared_member_node(tmp_path):
     assert cluster.cluster_labels == ["shared_node"]
     assert cluster.conflict_state == "none"
     assert cluster.canonical_description == f"HyperEdges sharing node: {shared_node_id}"
-    assert {member.edge_id for member in members} == {edge.edge_id for edge in edges}
+    assert cluster.metadata["cluster_basis"] == "shared_node"
+    assert cluster.metadata["cluster_reasons"] == ["shared_node"]
+    assert {occurrence["node_id"] for occurrence in cluster.metadata["anchor_occurrences"]} == {shared_node_id}
+    shared_members = [member for member in members if member.cluster_id == cluster.cluster_id]
+    assert {member.edge_id for member in shared_members} == {edge.edge_id for edge in edges}
+
+
+def test_edge_cluster_groups_edges_with_semantic_anchor_from_local_triples(tmp_path):
+    memory = Memory.from_config(
+        {"storage": {"path": str(tmp_path / "memory.sqlite3")}},
+        extractor=SequenceHomogeneousExtractor(
+            [
+                {
+                    "edge_summaries": [{"ref": "e1", "description": "Alice owns Project Atlas."}],
+                    "nodes": [
+                        {
+                            "ref": "n1",
+                            "labels": ["fact"],
+                            "canonical_text": "Alice owns Project Atlas.",
+                            "summaries": ["Alice owns Project Atlas."],
+                            "triples": [{"subject": "Alice", "predicate": "owns", "object": "Project Atlas"}],
+                            "edge_summary_refs": ["e1"],
+                        }
+                    ],
+                },
+                {
+                    "edge_summaries": [{"ref": "e2", "description": "Project Atlas status is green."}],
+                    "nodes": [
+                        {
+                            "ref": "n2",
+                            "labels": ["state"],
+                            "canonical_text": "Project Atlas status is green.",
+                            "summaries": ["Project Atlas status is green."],
+                            "triples": [{"subject": "Project Atlas", "predicate": "status", "object": "green"}],
+                            "edge_summary_refs": ["e2"],
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    namespace = "semantic_anchor_cluster_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice owns Project Atlas.", namespace=namespace)
+    memory.add_memory("Project Atlas status is green.", namespace=namespace)
+    edges = memory.store.list_edges(namespace)
+    clusters = memory.store.list_edge_clusters(namespace)
+    semantic_clusters = [cluster for cluster in clusters if cluster.cluster_labels == ["semantic_anchor"]]
+    semantic_members = memory.store.list_edge_cluster_members(
+        namespace,
+        [cluster.cluster_id for cluster in semantic_clusters],
+    )
+    memory.close()
+
+    assert len(edges) == 2
+    assert len(semantic_clusters) == 1
+    cluster = semantic_clusters[0]
+    assert cluster.canonical_description == "HyperEdges sharing semantic anchor: project atlas"
+    assert cluster.metadata["cluster_basis"] == "semantic_anchor"
+    assert cluster.metadata["anchor_value"] == "project atlas"
+    assert cluster.metadata["cluster_reasons"] == ["object_subject"]
+    assert {occurrence["position"] for occurrence in cluster.metadata["anchor_occurrences"]} == {"object", "subject"}
+    assert {member.edge_id for member in semantic_members} == {edge.edge_id for edge in edges}
 
 
 def test_entity_label_nodes_reuse_existing_alias_entry(tmp_path):

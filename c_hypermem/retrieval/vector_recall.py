@@ -23,6 +23,14 @@ class VectorNodeHit:
     hit: VectorSearchHit
 
 
+@dataclass(frozen=True)
+class VectorEdgeHit:
+    edge_id: str
+    channel: str
+    score: float
+    hit: VectorSearchHit
+
+
 class DenseVectorRecall:
     """Recall node candidates from rebuildable dense vector indexes."""
 
@@ -63,6 +71,48 @@ class DenseVectorRecall:
         nodes = self.store.get_nodes(namespace, list(dict.fromkeys(hit.node_id for hit in hits)))
         active_node_ids = {node.node_id for node in nodes if node.status == "active"}
         return [hit for hit in hits if hit.node_id in active_node_ids]
+
+    def recall_hyper_edges(
+        self,
+        *,
+        namespace: str,
+        query: str,
+        query_vector: list[float] | None,
+    ) -> list[VectorEdgeHit]:
+        if query_vector is None:
+            return []
+        limit = max(0, self.config.hyper_edge_description_vector_top_k)
+        if limit <= 0:
+            return []
+        store = self.vector_stores.get("hyper_edge_description")
+        search = getattr(store, "search", None)
+        if not callable(search):
+            return []
+
+        results: list[VectorEdgeHit] = []
+        for hit in search(
+            query=query,
+            vector=query_vector,
+            top_k=limit,
+            filters={"namespace": namespace, "edge_status": "active"},
+        ):
+            if hit.payload.get("item_type") != "hyper_edge_description":
+                continue
+            edge_id = str(hit.payload.get("edge_id") or "")
+            if not edge_id:
+                continue
+            results.append(
+                VectorEdgeHit(
+                    edge_id=edge_id,
+                    channel="hyper_edge_description_vector",
+                    score=float(hit.score),
+                    hit=hit,
+                )
+            )
+
+        edges = self.store.get_edges(namespace, list(dict.fromkeys(hit.edge_id for hit in results)))
+        active_edge_ids = {edge.edge_id for edge in edges if edge.status == "active"}
+        return [hit for hit in results if hit.edge_id in active_edge_ids]
 
     def _search_node_channels(
         self,

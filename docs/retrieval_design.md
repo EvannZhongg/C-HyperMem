@@ -19,6 +19,8 @@
 - query analysis 模式。
 - lexical recall 候选数。
 - node content / node local graph 向量召回候选数。`node_content` 向量文本由 `MemoryNode.content` 与 `MemoryNode.summary` 拼接生成，不再拆分独立 `node_summary` 向量通道。
+- HyperEdge description 向量召回候选数。
+- RRF 常数 `rrf_k`。
 - RRF 后进入图谱涟漪扩散的 seed 数。
 - HyperEdge coherence 的 `alpha` / `beta` 权重。
 - 最终返回的 HyperEdge 数量。
@@ -28,28 +30,32 @@
 ```text
 Memory.search(query, namespace)
   -> query analysis
-  -> parallel recall
+  -> parallel node recall
      -> lexical node recall
      -> node_content vector recall
      -> node_local_graph vector recall
   -> node-level fusion
-     -> Reciprocal Rank Fusion
+     -> Reciprocal Rank Fusion across lexical / node_content / node_local_graph
   -> graph ripple expansion
      -> seed node -> incident HyperEdge -> all edge member nodes
      -> incident HyperEdge -> EdgeCluster -> sibling edges and description variants
      -> HyperEdge coherence scoring
+  -> parallel HyperEdge description vector recall
+     -> query -> hyper_edge_description vector index -> concrete HyperEdge candidates
+  -> merge node-derived HyperEdge candidates and description-derived HyperEdge candidates
   -> edge-level ranking
   -> final top-k HyperEdges, each carrying member nodes
 ```
 
 ## 向量召回
 
-用户 query 会先被向量化，然后分别查询两个 node 向量索引：
+用户 query 会先被向量化，然后分别查询两个 node 向量索引和一个 HyperEdge 向量索引：
 
 - `node_content`
 - `node_local_graph`
+- `hyper_edge_description`
 
-每个向量命中必须通过 payload 中的 `node_id` 回到 SQLite canonical store 读取 `MemoryNode`。向量索引只作为可重建旁路索引，不作为权威数据源。
+node 向量命中必须通过 payload 中的 `node_id` 回到 SQLite canonical store 读取 `MemoryNode`。HyperEdge description 向量命中必须通过 payload 中的 `edge_id` 回到 SQLite canonical store 读取 `HyperEdge`。向量索引只作为可重建旁路索引，不作为权威数据源。
 
 `node_content` 索引文本为 node content 与 node summary 的拼接；当 summary 拼接或压缩维护导致 `MemoryNode.summary` 更新时，写入闭环必须用同一个 node content vector point id 覆盖更新。
 
@@ -63,21 +69,23 @@ Memory.search(query, namespace)
 
 当前使用 Reciprocal Rank Fusion。
 
-RRF 常数不需要暴露为用户配置；实现上应封装在融合模块中，方便后续替换融合策略。
+RRF 常数通过 `retrieval.rrf_k` 显式配置；实现上仍应封装在融合模块中，方便后续替换融合策略。
 
 ```text
 score(node) =
-  1 / (60 + rank_lexical)
-  + 1 / (60 + rank_vector)
+  1 / (rrf_k + rank_lexical)
+  + 1 / (rrf_k + rank_node_content_vector)
+  + 1 / (rrf_k + rank_node_local_graph_vector)
 ```
 
 其中：
 
 - `rank_lexical` 来自 SQLite FTS 结果排序。
-- `rank_vector` 来自三路向量召回合并后的排序。
+- `rank_node_content_vector` 来自 node content + summary 向量召回排序。
+- `rank_node_local_graph_vector` 来自 node local graph 向量召回排序。
 - 如果某个节点只出现在一路召回中，只计算该路的 RRF 分数。
 
-三路向量召回内部先按每个节点的最佳向量分数形成一个 vector 排名，再与 lexical 排名做 RRF。
+每个 node 向量通道内部先按每个节点的最佳向量分数形成该通道排名，再与 lexical 排名做 RRF。
 
 ## 图谱涟漪扩散
 

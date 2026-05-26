@@ -6,7 +6,6 @@ storage:
   backend: sqlite
   path: runs/c_hypermem/memory.sqlite3
 
-default_top_k: 10
 prompt_version: 0.1.0
 
 nlp:
@@ -86,9 +85,11 @@ index:
 retrieval:
   # Query analysis modes: false disables analysis for evaluation; "llm" uses prompts/retrieval/query_analysis.md; "nlp" uses optional spaCy processing.
   query_analysis: false
+  rrf_k: 60
   lexical_top_k: 30
   node_content_vector_top_k: 20
   node_local_graph_vector_top_k: 20
+  hyper_edge_description_vector_top_k: 10
   graph_seed_top_k: 80
   edge_coherence_alpha: 0.5
   edge_coherence_beta: 2.0

@@ -8,7 +8,7 @@ from c_hypermem.config import MemoryConfig
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.local_graph_builder import LocalGraphBuilder
 from c_hypermem.pipeline.node_builder import NodeBuilder
-from c_hypermem.stores.vector_store import make_vector_point_id, node_local_graph_embedding_text
+from c_hypermem.stores.vector_store import VectorSearchHit, make_vector_point_id, node_local_graph_embedding_text
 from c_hypermem.schema import ExtractedNode, MemoryExtraction
 
 
@@ -44,8 +44,11 @@ def test_default_config_uses_global_token_counting_config():
     default_raw = yaml.safe_load(open("configs/default.yaml", encoding="utf-8")) or {}
     models_raw = yaml.safe_load(open("configs/models.yaml", encoding="utf-8")) or {}
 
+    assert "default_top_k" not in default_raw
     assert config.token_counting.tokenizer_encoding == "cl100k_base"
     assert models_raw["token_counting"]["tokenizer_encoding"] == "cl100k_base"
+    assert config.retrieval.rrf_k == 60
+    assert config.retrieval.hyper_edge_description_vector_top_k == 10
     assert "tokenizer_encoding" not in default_raw["maintenance"]["node_summary"]
     assert "tokenizer_encoding" not in default_raw["maintenance"]["hyper_edge_description"]
     assert "edge_cluster" not in default_raw["maintenance"]
@@ -859,6 +862,83 @@ def test_vector_indexing_uses_node_local_graph_and_hyper_edge_description(tmp_pa
     assert {record.payload["edge_id"] for record in edge_records} == {edge.edge_id for edge in edges}
 
 
+def test_vector_retrieval_uses_separate_node_rrf_channels(tmp_path):
+    embedding_client = RecordingEmbeddingClient()
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "retrieval": {"rrf_k": 10},
+        },
+        extractor=StaticHomogeneousExtractor(),
+        embedding_client=embedding_client,
+        vector_store=vector_store,
+    )
+    namespace = "separate_node_rrf_channels_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice prefers morning interviews.", namespace=namespace)
+    content_record = next(record for record in vector_store.records if record.payload["item_type"] == "node_content")
+    vector_store.search_hits = [
+        VectorSearchHit(
+            id=content_record.id,
+            score=0.92,
+            payload=content_record.payload,
+            text=content_record.text,
+        )
+    ]
+
+    results = memory.search("opaque vector query", namespace=namespace, top_k=1)
+    memory.close()
+
+    assert [call["top_k"] for call in vector_store.search_calls[-3:]] == [20, 20, 10]
+    assert "node_content" in results[0]["metadata"]["channels"]
+    assert any(
+        node["score_parts"].get("rrf_node_content") == 1 / 11
+        for node in results[0]["metadata"]["edge_nodes"]
+    )
+
+
+def test_hyper_edge_description_vector_recall_returns_edge_candidate(tmp_path):
+    embedding_client = RecordingEmbeddingClient()
+    vector_store = RecordingVectorStore()
+    memory = Memory.from_config(
+        {
+            "storage": {"path": str(tmp_path / "memory.sqlite3")},
+            "retrieval": {"rrf_k": 10, "hyper_edge_description_vector_top_k": 3},
+        },
+        extractor=StaticHomogeneousExtractor(),
+        embedding_client=embedding_client,
+        vector_store=vector_store,
+    )
+    namespace = "hyper_edge_description_vector_recall_ns"
+    memory.reset(namespace)
+
+    memory.add_memory("Alice prefers morning interviews.", namespace=namespace)
+    edge_record = next(
+        record
+        for record in vector_store.records
+        if record.payload["item_type"] == "hyper_edge_description"
+    )
+    vector_store.search_hits = [
+        VectorSearchHit(
+            id=edge_record.id,
+            score=0.98,
+            payload=edge_record.payload,
+            text=edge_record.text,
+        )
+    ]
+
+    results = memory.search("interview preference", namespace=namespace, top_k=1)
+    memory.close()
+
+    assert [call["top_k"] for call in vector_store.search_calls[-3:]] == [20, 20, 3]
+    assert results
+    assert results[0]["id"] == edge_record.payload["edge_id"]
+    assert "hyper_edge_description_vector" in results[0]["metadata"]["channels"]
+    assert results[0]["metadata"]["score_parts"]["rrf_hyper_edge_description_vector"] == 1 / 11
+
+
 def test_hyperedge_maintenance_reuses_same_member_set_and_reindexes_description(tmp_path):
     embedding_client = RecordingEmbeddingClient()
     vector_store = RecordingVectorStore()
@@ -1056,6 +1136,8 @@ class RecordingTokenCounter:
 class RecordingVectorStore:
     def __init__(self):
         self.records = []
+        self.search_hits = []
+        self.search_calls = []
         self.deleted_namespaces = []
         self.deleted_ids = []
         self.closed = False
@@ -1064,7 +1146,15 @@ class RecordingVectorStore:
         self.records.extend(records)
 
     def search(self, *, query, vector, top_k, filters=None):
-        return []
+        self.search_calls.append(
+            {
+                "query": query,
+                "vector": vector,
+                "top_k": top_k,
+                "filters": filters or {},
+            }
+        )
+        return list(self.search_hits)[:top_k]
 
     def delete(self, ids):
         self.deleted_ids.extend(ids)

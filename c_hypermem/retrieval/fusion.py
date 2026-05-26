@@ -20,18 +20,30 @@ class FusedNode:
     cluster_description_variants: list[dict[str, object]]
 
 
-def reciprocal_rank_fusion(
+@dataclass(frozen=True)
+class RankedNodeList:
+    nodes: list[MemoryNode]
+    channel: str
+    score_key: str
+
+
+def reciprocal_rank_fusion_channels(
     *,
-    lexical_nodes: list[MemoryNode],
-    vector_nodes: list[MemoryNode],
+    ranked_lists: list[RankedNodeList],
     vector_hit_payloads: dict[str, list[dict[str, object]]] | None = None,
     k: int = RRF_K,
 ) -> list[FusedNode]:
     fused: dict[str, FusedNode] = {}
     payloads = vector_hit_payloads or {}
 
-    _add_ranked_list(fused, lexical_nodes, channel="lexical", score_key="rrf_lexical", k=k)
-    _add_ranked_list(fused, vector_nodes, channel="vector", score_key="rrf_vector", k=k)
+    for ranked_list in ranked_lists:
+        _add_ranked_list(
+            fused,
+            ranked_list.nodes,
+            channel=ranked_list.channel,
+            score_key=ranked_list.score_key,
+            k=k,
+        )
 
     for node_id, hits in payloads.items():
         if node_id in fused:

@@ -76,8 +76,6 @@ class NodeLabelConfig(BaseModel):
 class NodeLabelsConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    unconfigured_label_policy: NodeLabelConfig = Field(default_factory=NodeLabelConfig)
-
     def model_post_init(self, __context: Any) -> None:
         extra = self.__pydantic_extra__ or {}
         for key, value in list(extra.items()):

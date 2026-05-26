@@ -4,12 +4,9 @@ turn:
   indexing: {lexical: true, vector: true, time_index: true}
 
 node_labels:
-  unconfigured_label_policy:
-    description: "The configured labels are preferences, not a closed whitelist. If a reusable memory object does not fit them, emit a concise semantic label that names what the memory is."
-    indexing: {lexical: true, vector: true}
   entity:
     enabled: true
-    description: "Named or referential objects that can be reused across memories, such as people, organizations, places, projects, products, files, tools, and other referents that may appear again."
+    description: "Named or referential objects that can be reused across memories, such as people, organizations, places, projects, products, files, tools, and other referents that may appear again. For the current human user themself, use canonical text and triple subject exactly `User`; do not alternate with `The user`, `I`, `me`, or `my`."
     alias_resolution: true
     indexing: {lexical: true, vector: true, alias_index: true}
   fact:

@@ -51,6 +51,8 @@ def test_default_config_uses_global_token_counting_config():
     assert models_raw["nlp"]["model_path"] == "models/en_core_web_sm"
     assert config.retrieval.rrf_k == 60
     assert config.retrieval.hyper_edge_description_vector_top_k == 10
+    assert "unconfigured_label_policy" not in (default_raw.get("node_labels") or {})
+    assert not hasattr(config.node_labels, "unconfigured_label_policy")
     assert "tokenizer_encoding" not in default_raw["maintenance"]["node_summary"]
     assert "tokenizer_encoding" not in default_raw["maintenance"]["hyper_edge_description"]
     assert "nlp" not in default_raw

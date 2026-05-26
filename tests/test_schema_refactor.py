@@ -210,6 +210,9 @@ def test_llm_memory_extractor_prompt_and_parser_use_nodes_and_edge_summaries():
     assert "Do not output sources, source_ref, source_refs" in llm.prompts[0]
     assert "polarity, nodes[].time, confidence" in llm.prompts[0]
     assert "Use `nodes` as the only carrier" in llm.prompts[0]
+    assert "use exactly `User` as" in llm.prompts[0]
+    assert "The user" in llm.prompts[0]
+    assert "Do not alternate between `User`, `The user`, `I`, or the user's name" in llm.prompts[0]
     assert '"entities", "events", "assertions"' not in llm.prompts[0]
 
 

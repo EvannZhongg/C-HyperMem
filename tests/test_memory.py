@@ -414,14 +414,13 @@ def test_maintenance_prompt_registry_loads_edge_prompts():
     assert registry.load("maintenance.edge_conflict_check").hash.startswith("sha256:")
 
 
-def test_unconfigured_label_policy_is_rendered_as_rule_not_label():
+def test_open_node_label_rule_lives_in_prompt_not_rendered_label_config():
     config = MemoryConfig.load("configs/default.yaml")
     rendered = _render_node_labels(config)
 
     assert "default_policy" not in rendered
     assert "unconfigured_label_policy" not in rendered
-    assert "- Unconfigured labels:" in rendered
-    assert "not a closed whitelist" in rendered
+    assert "- Unconfigured labels:" not in rendered
 
 
 def test_extraction_prompt_injects_node_label_config():
@@ -443,7 +442,7 @@ def test_extraction_prompt_injects_node_label_config():
     assert "- entity:" in prompt
     assert "- instruction:" in prompt
     assert "- turn:" not in prompt
-    assert "- Unconfigured labels:" in prompt
+    assert "- Unconfigured labels:" not in prompt
     assert "not a closed whitelist" in prompt
     assert "node_id" in prompt
     assert "## Interaction Metadata" in prompt

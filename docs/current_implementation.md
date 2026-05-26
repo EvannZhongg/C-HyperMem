@@ -24,7 +24,6 @@
 - `maintenance` 是顶层配置；当前只包含 `node_summary.*`、`local_triples.*` 和 `hyper_edge_description.*`，不再包含 EdgeCluster 维护入口。
 - 当前默认节点标签包括：`event/fact/entity/state/preference/task/instruction/tool`。
 - `turn` 不是 `MemoryNode` 标签；它是独立的原始对话记录配置，写入 `turns` 表和 `turn_dialogue` 向量索引，不需要 `LocalNodeGraph`。
-- `node_labels.unconfigured_label_policy` 是未配置标签的处理规则；传入 prompt 时只以规则文本出现，不作为可抽取 label 名称暴露给 LLM。
 - `configs/default.yaml` 中的 `include` 是配置加载器指令，会在进入 `MemoryConfig` 前合并 `models.yaml` 和 `node_labels.yaml`，因此保留；它不是运行时配置项。
 - `prompt_version`、`node_identity.*`、顶层 `local_graph.*`、`time.relative_decay.*`、`ingestion.event_mode/max_facts_per_event/extractor`、`extraction.output_schema/forbid_model_ids/forbid_confidence/allow_unknown_node_labels`、`hyperedges.*`、以及 node label 内的 `local_graph` 策略已从当前配置中移除。这些字段此前只被 Pydantic 接收、停留在设计文档中，或只是把系统默认实现从配置绕一圈传回代码，当前不再暴露给用户。
 
@@ -352,9 +351,6 @@ SearchResult 当前结构要点：
 - **不同语义向量使用独立 collection**
   当前已索引 node-local-graph、合并后的节点 content/summary、HyperEdge description、EdgeCluster canonical description、EdgeCluster description variants 和 turn dialogue，但每类向量使用独立 Qdrant collection。检索侧已接入 node-local-graph、node_content、HyperEdge description 向量召回，并保持分别限流、分别解释；后续新增 EdgeCluster 或 turn_dialogue 召回时也应保持该隔离方式。
 
-- **`unconfigured_label_policy` 只作为规则，不暴露为 prompt label**  
-  这避免 LLM 抽取出 `default_policy` 或 `unconfigured_label_policy` 这类实现名标签。后续扩展 node label prompt 时应保持该行为。
-
 ## 11. 验证
 
 当前测试覆盖：
@@ -380,7 +376,7 @@ SearchResult 当前结构要点：
 - 统一节点 schema 和 SQLite 表结构。
 - 显式 extractor 到系统组装链路。
 - 默认节点标签集合。
-- `unconfigured_label_policy` 不作为 prompt label 渲染，只以未配置标签规则传入。
+- `unconfigured_label_policy` 已从配置和 prompt 渲染路径移除；未配置标签的开放性由抽取 prompt 的通用规则说明。
 - 抽取 prompt 注入 `node_labels.yaml`。
 - Node summary 维护：低于 `k` 时跨来源拼接并重写 node_content 向量；达到 `k` 或 token 上限时强触发 LLM 压缩；无维护 LLM 时显式失败。
 - LocalTriple 维护：同 node 内 normalized S/P 相同触发按 node 批量 LLM 路由，覆盖 `keep_existing/keep_new/keep_both/merge/needs_review`，并验证 retired triples 不进入 node-local-graph 向量文本。

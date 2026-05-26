@@ -142,7 +142,6 @@ class Retriever:
                     ],
                     edge_ids={edge.edge_id},
                     cluster_ids=set(),
-                    cluster_description_variants=[],
                 )
                 for node_id in edge.node_ids
                 if (node := nodes_by_id.get(node_id)) is not None and node.status == "active"
@@ -159,7 +158,7 @@ class Retriever:
                         "rrf_hyper_edge_description_vector": score,
                     },
                     cluster_ids=set(),
-                    cluster_description_variants=[],
+                    cluster_edge_descriptions=[],
                     hit_node_ids=set(),
                 )
             )
@@ -189,8 +188,8 @@ class Retriever:
             existing.score_parts = {**existing.score_parts, **item.score_parts}
             existing.cluster_ids.update(item.cluster_ids)
             existing.hit_node_ids.update(item.hit_node_ids)
-            existing.cluster_description_variants = _unique_variant_payloads(
-                [*existing.cluster_description_variants, *item.cluster_description_variants]
+            existing.cluster_edge_descriptions = _unique_edge_description_payloads(
+                [*existing.cluster_edge_descriptions, *item.cluster_edge_descriptions]
             )
             existing.nodes = _merge_fused_nodes(existing.nodes, item.nodes)
         return sorted(merged.values(), key=lambda item: item.score, reverse=True)
@@ -206,7 +205,7 @@ class Retriever:
             "channels": sorted({channel for node in ranked_edge.nodes for channel in node.channels}),
             "hit_node_ids": sorted(ranked_edge.hit_node_ids),
             "cluster_ids": sorted(ranked_edge.cluster_ids),
-            "cluster_description_variants": ranked_edge.cluster_description_variants,
+            "cluster_edge_descriptions": ranked_edge.cluster_edge_descriptions,
             "score_parts": ranked_edge.score_parts,
             "time": edge.time.model_dump(mode="json"),
             "edge_metadata": edge.metadata,
@@ -260,9 +259,6 @@ def _merge_fused_nodes(left: list[FusedNode], right: list[FusedNode]) -> list[Fu
         existing.vector_hits = _unique_vector_hits([*existing.vector_hits, *item.vector_hits])
         existing.edge_ids.update(item.edge_ids)
         existing.cluster_ids.update(item.cluster_ids)
-        existing.cluster_description_variants = _unique_variant_payloads(
-            [*existing.cluster_description_variants, *item.cluster_description_variants]
-        )
     return sorted(merged.values(), key=lambda node: node.score, reverse=True)
 
 
@@ -278,11 +274,11 @@ def _unique_vector_hits(items: list[dict[str, object]]) -> list[dict[str, object
     return unique
 
 
-def _unique_variant_payloads(items: list[dict[str, object]]) -> list[dict[str, object]]:
+def _unique_edge_description_payloads(items: list[dict[str, object]]) -> list[dict[str, object]]:
     seen: set[tuple[object, object, object]] = set()
     unique: list[dict[str, object]] = []
     for item in items:
-        key = (item.get("cluster_id"), item.get("text"), item.get("source_edge_id"))
+        key = (item.get("cluster_id"), item.get("edge_id"), item.get("description"))
         if key in seen:
             continue
         seen.add(key)

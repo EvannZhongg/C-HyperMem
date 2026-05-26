@@ -180,11 +180,6 @@ class HyperEdge(BaseModel):
     time: TimeBundle = Field(default_factory=TimeBundle)
 
 
-class EdgeDescriptionVariant(BaseModel):
-    text: str
-    source_edge_id: str | None = None
-
-
 class EdgeCluster(BaseModel):
     cluster_id: str
     namespace: str
@@ -193,7 +188,6 @@ class EdgeCluster(BaseModel):
     cluster_labels: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
     conflict_state: ConflictState = "none"
-    description_variants: list[EdgeDescriptionVariant] = Field(default_factory=list)
     status: MemoryStatus = "active"
     metadata: dict[str, Any] = Field(default_factory=dict)
 

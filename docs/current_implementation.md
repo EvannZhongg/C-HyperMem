@@ -149,7 +149,6 @@ maintenance:
   - `c_hypermem_memory_node_content`
   - `c_hypermem_memory_hyper_edge_description`
   - `c_hypermem_memory_edge_cluster_canonical`
-  - `c_hypermem_memory_edge_cluster_variant`
   - `c_hypermem_memory_turn_dialogue`
 - `node_local_graph` collection 保存 node-local-graph 向量：每个带 LocalGraph triples 的 `MemoryNode` 只写入 1 个向量点，而不是每条 triple 一个向量点。写入前会把节点核心内容和该节点内部所有 triples 揉成一段完整文本；不加入 `Core content`、`Local graph` 等额外语义注释，避免增加噪声。例如：
 
@@ -162,7 +161,6 @@ maintenance:
 - `node_content` 向量：索引 `MemoryNode.content` 与 `MemoryNode.summary` 的拼接文本，payload 中保留 `node_id/node_labels/status/time/metadata` 等信息。当前不再创建独立 `node_summary` 向量 collection。
 - `hyper_edge_description` 向量：索引每条具体 `HyperEdge.description`，payload 中保留 `edge_id/edge_fingerprint/node_ids/member_signature/time/metadata` 等信息。
 - `edge_cluster_canonical` 向量：索引 `EdgeCluster.canonical_description`，payload 中保留 `cluster_id/cluster_labels/conflict_state` 等信息。
-- `edge_cluster_variant` 向量：索引 `EdgeCluster.description_variants` 中的各个描述变体，payload 中保留 `cluster_id/variant_index/source_edge_id` 等信息。`BasicEdgeClusterBuilder` 复用已有 cluster 时会追加新的 description variant，并重新持久化 cluster。
 - `turn_dialogue` 向量：只索引同一个 `turn_id` 下 role 为 `user` 和 `assistant` 的消息，按轮次拼接为完整对话日志，且 payload 中必须带 `turn_id`、`turn_index` 和 `dialogue_roles`。后续检索命中该向量时，应拿 `turn_id` 回 SQLite `turns` 表提取完整对话，而不是依赖向量库中的文本作为权威上下文。
 - 当节点退役时，会删除该节点对应的 node-local-graph 和 node_content 向量点，避免非 active 节点继续被向量召回。其中 node-local-graph 向量删除显式调用 `node_local_graph` collection 对应的 vector store。
 
@@ -188,7 +186,7 @@ Memory.search(query, namespace)
      -> GraphRippleExpansion.expand(...)
         - RRF top 80 作为图谱种子
         - seed node -> incident HyperEdge -> edge 内 active nodes
-        - incident HyperEdge -> EdgeCluster -> description_variants 和 sibling edge nodes
+        - incident HyperEdge -> EdgeCluster -> sibling edge descriptions 和 sibling edge nodes
         - 同一 HyperEdge 内 2+ seed hits 时计算 edge_coherence
      -> DenseVectorRecall.recall_hyper_edges(...)
         - hyper_edge_description top 10
@@ -240,7 +238,7 @@ SearchResult 当前结构要点：
 - `score`：edge-level score，当前取 edge 内成员 node 的最高分。
 - `metadata.edge_metadata`：系统写入的 edge metadata，例如 `source_turn_ids`。
 - `metadata.edge_nodes`：该 edge 内的 nodes，每个 node 带 `node_id/content/summary/score/channels/score_parts/matched_vector_items/source_turn_ids/triples/time/node_metadata`；不再暴露旧 `source_session_id/source_event_id`。
-- `metadata.cluster_description_variants`：如果 edge 属于 EdgeCluster，会带出 cluster 的 description variants。
+- `metadata.cluster_edge_descriptions`：如果 edge 属于 EdgeCluster，会从该 cluster 的成员 HyperEdges 动态读取并带出 edge descriptions。
 
 当前仍不接入：
 
@@ -271,7 +269,7 @@ SearchResult 当前结构要点：
 - Node summary、LocalTriple 与 description-only HyperEdge description 维护已接入同构节点/边合并路径；更完整的 memory node merge/update/conflict 仍待实现。
 - `state/task/instruction/tool` 已作为标签配置存在，但尚未都有专门构建策略；当前主要依靠 LLM 输出 labels 和统一节点结构承载。`turn` 已从节点标签配置中独立出来，只作为对话记录和来源追踪配置。
 - 检索主流程已接入 node_content（content + summary 拼接）、node-local-graph 和 HyperEdge description 向量召回，但尚未接入 EdgeCluster canonical / variant 向量召回，也未接入 turn_dialogue 向量召回。
-- EdgeCluster 当前保留为确定性锚点聚合视图；检索侧已能在命中 edge 所属 cluster 时带出 `description_variants` 和 sibling edge nodes。`BasicEdgeClusterBuilder` 统一使用 `AnchorKey/AnchorOccurrence` 构建 shared-node 与 semantic-anchor clusters：共享成员 node 形成 `cluster_labels=["shared_node"]`；semantic-anchor cluster 只在不同 HyperEdge 的 active local triples 满足 `subject_subject` 至少 1 次，或 `subject_object/object_subject` 至少 1 次时建立。`edge_clusters.stop_nodes` 中的 normalized 文本（默认 `User`、`Assistant`）作为 subject 参与 `subject_subject` 时不触发 cluster；但 object 与 stop-node subject 的 `subject_object/object_subject` 交叉命中仍可触发。单独 `object_object` 不再建立 semantic cluster。两类 cluster metadata 都记录 `cluster_basis/anchor_value/anchor_occurrences/cluster_reasons`；semantic anchor 额外记录 `anchor_positions`。当前不做相似 cluster 向量召回、LLM cluster merge、后台宏观整理或复杂冲突状态维护。
+- EdgeCluster 当前保留为确定性锚点聚合视图；检索侧已能在命中 edge 所属 cluster 时带出 sibling edge descriptions 和 sibling edge nodes。`BasicEdgeClusterBuilder` 统一使用 `AnchorKey/AnchorOccurrence` 构建 shared-node 与 semantic-anchor clusters：共享成员 node 形成 `cluster_labels=["shared_node"]`；semantic-anchor cluster 只在不同 HyperEdge 的 active local triples 满足 `subject_subject` 至少 1 次，或 `subject_object/object_subject` 至少 1 次时建立。`edge_clusters.stop_nodes` 中的 normalized 文本（默认 `User`、`Assistant`）作为 subject 参与 `subject_subject` 时不触发 cluster；但 object 与 stop-node subject 的 `subject_object/object_subject` 交叉命中仍可触发。单独 `object_object` 不再建立 semantic cluster。两类 cluster metadata 都记录 `cluster_basis/anchor_value/anchor_occurrences/cluster_reasons`；semantic anchor 额外记录 `anchor_positions`。当前不做相似 cluster 向量召回、LLM cluster merge、后台宏观整理或复杂冲突状态维护。
 - LocalNodeGraph 当前只覆盖 event participants、entity attributes 和 assertion SPO；还没有从事件内部关系、工具调用、任务状态中构建更丰富的局部图。
 
 ## 9. 设计仍不明确时的轻量替代方案
@@ -369,7 +367,7 @@ SearchResult 当前结构要点：
 - 写入侧统一通过 `Memory._index_nodes_edges_and_clusters(...)` 为 node-local-graph、合并后的 node content/summary、HyperEdge description、EdgeCluster canonical description 和 EdgeCluster variants 建索引。
 - `MemoryNode.content` 和 `MemoryNode.summary` 分别写入独立向量 collection。
 - `HyperEdge.description` 写入独立向量 collection。
-- `EdgeCluster.canonical_description` 和 `description_variants` 分别写入独立向量 collection。
+- `EdgeCluster.canonical_description` 写入独立向量 collection；cluster member edge descriptions 不缓存在 EdgeCluster 上，由检索时按成员 HyperEdges 动态读取。
 - 复用已有 EdgeCluster 时会追加 description variant，并参与后续向量写入。
 - `turn_dialogue` 向量按 `turn_id` 轮次拼接 user / assistant 消息，跳过 observation / tool 日志，并在 payload 中保存 `turn_id`。
 - 默认 Qdrant collection 命名保持按向量语义类型隔离。

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from c_hypermem.config import RetrievalConfig
 from c_hypermem.retrieval.fusion import FusedNode
-from c_hypermem.schema import EdgeCluster, HyperEdge, MemoryNode
+from c_hypermem.schema import EdgeCluster, EdgeClusterMember, HyperEdge, MemoryNode
 from c_hypermem.stores.base import MemoryStore
 
 
@@ -16,7 +16,7 @@ class RankedEdge:
     nodes: list[FusedNode]
     score_parts: dict[str, float]
     cluster_ids: set[str]
-    cluster_description_variants: list[dict[str, object]]
+    cluster_edge_descriptions: list[dict[str, object]]
     hit_node_ids: set[str]
 
 
@@ -37,7 +37,7 @@ class GraphRippleExpansion:
         seed_ids = set(seed_scores)
 
         incident_edges = self.store.get_incident_edges(namespace, list(seed_ids))
-        cluster_edges, clusters_by_edge = self._cluster_edges(namespace, incident_edges)
+        cluster_edges, clusters_by_edge, cluster_descriptions_by_edge = self._cluster_edges(namespace, incident_edges)
         edges_by_id = {edge.edge_id: edge for edge in [*incident_edges, *cluster_edges]}
         nodes_by_id = self._load_nodes(namespace, edges_by_id.values(), by_node_id)
 
@@ -80,6 +80,7 @@ class GraphRippleExpansion:
             by_node_id=by_node_id,
             coherence_by_edge=coherence_by_edge,
             clusters_by_edge=clusters_by_edge_id,
+            cluster_descriptions_by_edge=cluster_descriptions_by_edge,
             hit_ids_by_edge=hit_ids_by_edge,
         )
 
@@ -108,14 +109,12 @@ class GraphRippleExpansion:
                     vector_hits=[],
                     edge_ids=set(),
                     cluster_ids=set(),
-                    cluster_description_variants=[],
                 ),
             )
             item.channels.add("graph")
             item.edge_ids.add(edge.edge_id)
             for cluster in clusters:
                 item.cluster_ids.add(cluster.cluster_id)
-                self._add_cluster_variants(item, cluster)
             if coherence > 0:
                 item.score += coherence
                 item.score_parts["edge_coherence"] = item.score_parts.get("edge_coherence", 0.0) + coherence
@@ -135,11 +134,11 @@ class GraphRippleExpansion:
         self,
         namespace: str,
         incident_edges: list[HyperEdge],
-    ) -> tuple[list[HyperEdge], dict[str, list[EdgeCluster]]]:
+    ) -> tuple[list[HyperEdge], dict[str, list[EdgeCluster]], dict[str, list[dict[str, object]]]]:
         edge_ids = [edge.edge_id for edge in incident_edges]
         clusters = self.store.get_edge_clusters_for_edges(namespace, edge_ids)
         if not clusters:
-            return [], {}
+            return [], {}, {}
 
         members = self.store.list_edge_cluster_members(namespace, [cluster.cluster_id for cluster in clusters])
         cluster_by_id = {cluster.cluster_id: cluster for cluster in clusters}
@@ -151,8 +150,14 @@ class GraphRippleExpansion:
 
         all_cluster_edge_ids = list(dict.fromkeys(member.edge_id for member in members))
         cluster_edges = self.store.get_edges(namespace, all_cluster_edge_ids)
+        edges_by_id = {edge.edge_id: edge for edge in [*incident_edges, *cluster_edges]}
+        cluster_edge_descriptions = _cluster_edge_descriptions(members, edges_by_id)
         incident_edge_ids = set(edge_ids)
-        return [edge for edge in cluster_edges if edge.edge_id not in incident_edge_ids], clusters_by_edge
+        return (
+            [edge for edge in cluster_edges if edge.edge_id not in incident_edge_ids],
+            clusters_by_edge,
+            cluster_edge_descriptions,
+        )
 
     def _load_nodes(
         self,
@@ -169,23 +174,6 @@ class GraphRippleExpansion:
             loaded.setdefault(node_id, item.node)
         return loaded
 
-    def _add_cluster_variants(self, item: FusedNode, cluster: EdgeCluster) -> None:
-        existing = {
-            (variant.get("cluster_id"), variant.get("text"), variant.get("source_edge_id"))
-            for variant in item.cluster_description_variants
-        }
-        for variant in cluster.description_variants:
-            payload = {
-                "cluster_id": cluster.cluster_id,
-                "text": variant.text,
-                "source_edge_id": variant.source_edge_id,
-            }
-            key = (payload["cluster_id"], payload["text"], payload["source_edge_id"])
-            if key in existing:
-                continue
-            existing.add(key)
-            item.cluster_description_variants.append(payload)
-
     def _rank_edges(
         self,
         *,
@@ -193,6 +181,7 @@ class GraphRippleExpansion:
         by_node_id: dict[str, FusedNode],
         coherence_by_edge: dict[str, float],
         clusters_by_edge: dict[str, list[EdgeCluster]],
+        cluster_descriptions_by_edge: dict[str, list[dict[str, object]]],
         hit_ids_by_edge: dict[str, set[str]],
     ) -> list[RankedEdge]:
         ranked: list[RankedEdge] = []
@@ -210,21 +199,8 @@ class GraphRippleExpansion:
             if coherence > 0:
                 score_parts["edge_coherence"] = coherence
             cluster_ids: set[str] = set()
-            variants: list[dict[str, object]] = []
-            seen_variants: set[tuple[object, object, object]] = set()
             for cluster in clusters_by_edge.get(edge.edge_id, []):
                 cluster_ids.add(cluster.cluster_id)
-                for variant in cluster.description_variants:
-                    payload = {
-                        "cluster_id": cluster.cluster_id,
-                        "text": variant.text,
-                        "source_edge_id": variant.source_edge_id,
-                    }
-                    key = (payload["cluster_id"], payload["text"], payload["source_edge_id"])
-                    if key in seen_variants:
-                        continue
-                    seen_variants.add(key)
-                    variants.append(payload)
             ranked.append(
                 RankedEdge(
                     edge=edge,
@@ -232,8 +208,43 @@ class GraphRippleExpansion:
                     nodes=sorted(nodes, key=lambda node: node.score, reverse=True),
                     score_parts=score_parts,
                     cluster_ids=cluster_ids,
-                    cluster_description_variants=variants,
+                    cluster_edge_descriptions=cluster_descriptions_by_edge.get(edge.edge_id, []),
                     hit_node_ids=hit_ids_by_edge.get(edge.edge_id, set()),
                 )
             )
         return sorted(ranked, key=lambda item: item.score, reverse=True)
+
+
+def _cluster_edge_descriptions(
+    members: list[EdgeClusterMember],
+    edges_by_id: dict[str, HyperEdge],
+) -> dict[str, list[dict[str, object]]]:
+    edge_ids_by_cluster: dict[str, list[str]] = {}
+    cluster_ids_by_edge: dict[str, list[str]] = {}
+    for member in members:
+        cluster_id = member.cluster_id
+        edge_id = member.edge_id
+        edge_ids_by_cluster.setdefault(cluster_id, []).append(edge_id)
+        cluster_ids_by_edge.setdefault(edge_id, []).append(cluster_id)
+
+    descriptions_by_edge: dict[str, list[dict[str, object]]] = {}
+    for edge_id, cluster_ids in cluster_ids_by_edge.items():
+        seen: set[tuple[object, object, object]] = set()
+        payloads: list[dict[str, object]] = []
+        for cluster_id in cluster_ids:
+            for related_edge_id in edge_ids_by_cluster.get(cluster_id, []):
+                related_edge = edges_by_id.get(related_edge_id)
+                if related_edge is None or not related_edge.description.strip():
+                    continue
+                payload = {
+                    "cluster_id": cluster_id,
+                    "edge_id": related_edge.edge_id,
+                    "description": related_edge.description,
+                }
+                key = (payload["cluster_id"], payload["edge_id"], payload["description"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                payloads.append(payload)
+        descriptions_by_edge[edge_id] = payloads
+    return descriptions_by_edge

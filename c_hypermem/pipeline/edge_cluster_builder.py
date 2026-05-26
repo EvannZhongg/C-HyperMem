@@ -6,7 +6,7 @@ from typing import Any, Protocol
 from c_hypermem.config import MemoryConfig
 from c_hypermem.pipeline.context import AssemblyContext
 from c_hypermem.pipeline.graph_utils import deep_merge_dict, source_metadata
-from c_hypermem.schema import EdgeCluster, EdgeClusterMember, EdgeDescriptionVariant, HyperEdge, MemoryNode
+from c_hypermem.schema import EdgeCluster, EdgeClusterMember, HyperEdge, MemoryNode
 from c_hypermem.stores.base import MemoryStore
 from c_hypermem.utils.ids import make_cluster_id, make_fingerprint
 from c_hypermem.utils.text import compact_key, normalize_text
@@ -220,7 +220,6 @@ class BasicEdgeClusterBuilder:
                 cluster_labels=labels,
                 aliases=[compact_key(key.anchor_value)],
                 conflict_state="none",
-                description_variants=[],
                 metadata=source_metadata(context, source_ref=None, extra=extra),
             )
             created_or_changed = True
@@ -241,26 +240,7 @@ class BasicEdgeClusterBuilder:
                 or before_aliases != cluster.aliases
             )
 
-        before_variants = [(variant.text, variant.source_edge_id) for variant in cluster.description_variants]
-        for edge in related_edges:
-            self._append_description_variant(cluster, edge)
-        after_variants = [(variant.text, variant.source_edge_id) for variant in cluster.description_variants]
-        return cluster, created_or_changed or before_variants != after_variants
-
-    def _append_description_variant(self, cluster: EdgeCluster, edge: HyperEdge) -> None:
-        text = edge.description.strip()
-        if not text:
-            return
-        variant_key = (text, edge.edge_id)
-        existing_keys = {
-            (variant.text.strip(), variant.source_edge_id)
-            for variant in cluster.description_variants
-        }
-        if variant_key in existing_keys:
-            return
-        cluster.description_variants.append(EdgeDescriptionVariant(text=text, source_edge_id=edge.edge_id))
-        limit = max(1, self.config.edge_clusters.description_variants_limit)
-        cluster.description_variants = cluster.description_variants[:limit]
+        return cluster, created_or_changed
 
 
 @dataclass(frozen=True, order=True)

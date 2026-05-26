@@ -52,6 +52,8 @@ def test_default_config_uses_global_token_counting_config():
     assert config.retrieval.rrf_k == 60
     assert config.retrieval.hyper_edge_description_vector_top_k == 10
     assert config.edge_clusters.stop_nodes == ["User", "Assistant"]
+    assert "description_variants_limit" not in default_raw["edge_clusters"]
+    assert not hasattr(config.edge_clusters, "description_variants_limit")
     assert "unconfigured_label_policy" not in (default_raw.get("node_labels") or {})
     assert not hasattr(config.node_labels, "unconfigured_label_policy")
     assert "tokenizer_encoding" not in default_raw["maintenance"]["node_summary"]
@@ -98,6 +100,8 @@ def test_ingestion_builds_nodes_and_description_only_hyperedges(tmp_path):
     assert "edge_type" not in results[0]["metadata"]
     assert "edge_relation" not in results[0]["metadata"]
     assert "edge_roles" not in results[0]["metadata"]
+    assert "cluster_description_variants" not in results[0]["metadata"]
+    assert "cluster_edge_descriptions" in results[0]["metadata"]
     assert all(node.time.world.event_time for node in nodes)
     assert all(node.time.world.source_timestamp for node in nodes)
 

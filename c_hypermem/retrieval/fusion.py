@@ -17,7 +17,6 @@ class FusedNode:
     vector_hits: list[dict[str, object]]
     edge_ids: set[str]
     cluster_ids: set[str]
-    cluster_description_variants: list[dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -75,7 +74,6 @@ def _add_ranked_list(
                 vector_hits=[],
                 edge_ids=set(),
                 cluster_ids=set(),
-                cluster_description_variants=[],
             ),
         )
         score = 1.0 / (k + rank)

@@ -115,7 +115,6 @@ class MaintenanceConfig(BaseModel):
 
 class EdgeClustersConfig(BaseModel):
     enabled: bool = True
-    description_variants_limit: int = 8
     stop_nodes: list[str] = Field(default_factory=lambda: ["User", "Assistant"])
 
 

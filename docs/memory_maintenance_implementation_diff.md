@@ -276,7 +276,7 @@ metadata
 - 示例：edge A 的某个成员 node 有 `S1-P1-O1`，edge B 的某个成员 node 有 `S2-P2-O2`；如果 `O1 == S2`，则保持两个 triples 仍为单跳表达，同时建立一个 `semantic_anchor` cluster，把两条 edge 组织到同一检索视图中。
 - 如果同一组 edge 同时共享 member node，且还存在 eligible `S-S` 或 `S-O/O-S` 等多个端点锚点，应在 cluster metadata 中保留多个 `cluster_reasons` / `anchor_occurrences`，并对 `EdgeClusterMember(cluster_id, edge_id)` 做确定性去重。
 - EdgeCluster 不触发 HyperEdge merge，也不判断支持、更新、冲突关系。
-- `description_variants` 只作为检索上下文资产保存，不作为 cluster 相似度合并依据。
+- EdgeCluster 不再保存 `description_variants`；检索上下文需要相关描述时，从 cluster member HyperEdges 动态读取 description。
 - `EdgeClusterMember.relation_to_cluster` 已移除；cluster 成立依据通过 `EdgeCluster.cluster_labels` 与 metadata 表达。shared-node cluster 使用 `cluster_labels=["shared_node"]` 与 `metadata.shared_node_ids`；semantic-anchor cluster 使用 `cluster_labels=["semantic_anchor"]` 与 `metadata.cluster_basis/anchor_value/anchor_positions/anchor_occurrences/cluster_reasons`。
 
 当前没有：
@@ -308,7 +308,6 @@ metadata
 - `node_local_graph`
 - `hyper_edge_description`
 - `edge_cluster_canonical`
-- `edge_cluster_variant`
 - `turn_dialogue`
 
 当前 node-local-graph embedding 文本：
@@ -332,7 +331,7 @@ metadata
 - active `MemoryNode.content` 与非空 `MemoryNode.summary` 拼接写入 `node_content`。
 - active node 的 active triples 拼入 `node_local_graph`，并用稳定 `node_id` point id 覆盖更新。
 - concrete `HyperEdge.description` 写入 `hyper_edge_description`，同 `edge_id` 更新 description 后覆盖同一 point id。
-- `EdgeCluster.canonical_description` 和 `description_variants` 写入独立 collection。
+- `EdgeCluster.canonical_description` 写入独立 collection；不再维护 `edge_cluster_variant` collection。
 - `turn_dialogue` 按 `turn_id` 写入独立 collection。
 - `Memory.reset(namespace)` 会删除该 namespace 下所有向量 collection 的点。
 - 当前已有 retired node 的 node vectors 删除入口；但主路径很少产生 retired nodes。
@@ -343,7 +342,7 @@ metadata
 - retired / invalidated node 的所有 node vectors 删除入口已有，但主写入维护链路很少产生 retired / invalidated nodes，实际触发覆盖不足。
 - retired / invalidated HyperEdge 后删除或过滤 `hyper_edge_description` 点的链路尚未接入。
 - edge member set、status、time、metadata 改变后的索引一致性策略尚未完整定义；当前主要覆盖 description upsert。
-- retired / merged / invalidated EdgeCluster 后删除或过滤 `edge_cluster_canonical`、`edge_cluster_variant` 点的链路尚未接入。
+- retired / merged / invalidated EdgeCluster 后删除或过滤 `edge_cluster_canonical` 点的链路尚未接入。
 - EdgeCluster description variants 被截断或移除时，旧 variant point 的删除策略尚未接入。
 - turn dialogue 的细粒度删除或重写策略尚未定义；当前主要随 namespace reset 清理。
 - SQLite 写入与向量 upsert/delete 之间还没有事务级一致性保障；向量索引仍定位为可重建旁路索引。
@@ -492,7 +491,7 @@ EdgeCluster 的职责只保留为确定性锚点聚合：
 - edge member set、status、time、metadata 变化后的 payload 重写策略。
 - cluster canonical / variants 变化后重写 cluster 向量点；这属于索引同步，不是 EdgeCluster 维护决策。
 - cluster variant 被截断、移除或替换后删除旧 variant 点。
-- cluster retired/merged/invalidated 后删除或过滤 `edge_cluster_canonical`、`edge_cluster_variant` 点。
+- cluster retired/merged/invalidated 后删除或过滤 `edge_cluster_canonical` 点。
 - turn dialogue 更新、删除或重放时的细粒度索引策略。
 - SQLite canonical write 与 vector side-index 更新失败时的恢复 / 重建策略。
 

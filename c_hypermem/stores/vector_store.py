@@ -364,34 +364,6 @@ def collect_edge_cluster_canonical_index_items(clusters: Sequence[EdgeCluster]) 
     ]
 
 
-def collect_edge_cluster_variant_index_items(clusters: Sequence[EdgeCluster]) -> list[VectorIndexItem]:
-    items: list[VectorIndexItem] = []
-    for cluster in clusters:
-        seen: set[str] = set()
-        for index, variant in enumerate(cluster.description_variants):
-            text = variant.text.strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            variant_id = f"{cluster.cluster_id}:variant:{index}:{variant.source_edge_id or ''}:{text}"
-            payload = _cluster_payload(
-                cluster,
-                "edge_cluster_variant",
-                {
-                    "variant_index": index,
-                    "source_edge_id": variant.source_edge_id,
-                },
-            )
-            items.append(
-                VectorIndexItem(
-                    id=make_vector_point_id(cluster.namespace, "edge_cluster_variant", variant_id),
-                    text=text,
-                    payload={key: value for key, value in payload.items() if value is not None},
-                )
-            )
-    return items
-
-
 def collect_turn_dialogue_index_item(
     *,
     namespace: str,

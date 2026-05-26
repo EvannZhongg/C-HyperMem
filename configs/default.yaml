@@ -15,7 +15,6 @@ extraction:
 
 edge_clusters:
   enabled: true
-  description_variants_limit: 8
 
 maintenance:
   node_summary:

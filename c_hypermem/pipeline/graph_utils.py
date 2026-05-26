@@ -96,8 +96,6 @@ def dedupe_clusters(clusters: list[EdgeCluster]) -> list[EdgeCluster]:
         if existing is None:
             by_id[cluster.cluster_id] = cluster
             continue
-        existing.description_variants.extend(cluster.description_variants)
-        existing.description_variants = existing.description_variants[:8]
         existing.conflict_state = (
             "contains_conflict"
             if "contains_conflict" in {existing.conflict_state, cluster.conflict_state}

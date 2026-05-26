@@ -239,16 +239,15 @@ class SQLiteStore:
                     INSERT INTO edge_clusters (
                         namespace, cluster_id, cluster_fingerprint, canonical_description,
                         cluster_labels_json, aliases_json, conflict_state,
-                        description_variants_json, status, metadata_json
+                        status, metadata_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(namespace, cluster_id) DO UPDATE SET
                         cluster_fingerprint = excluded.cluster_fingerprint,
                         canonical_description = excluded.canonical_description,
                         cluster_labels_json = excluded.cluster_labels_json,
                         aliases_json = excluded.aliases_json,
                         conflict_state = excluded.conflict_state,
-                        description_variants_json = excluded.description_variants_json,
                         status = excluded.status,
                         metadata_json = excluded.metadata_json
                     """,
@@ -260,7 +259,6 @@ class SQLiteStore:
                         _to_json(cluster.cluster_labels),
                         _to_json(cluster.aliases),
                         cluster.conflict_state,
-                        _to_json([variant.model_dump(mode="json") for variant in cluster.description_variants]),
                         cluster.status,
                         _to_json(cluster.metadata),
                     ),
@@ -724,7 +722,6 @@ class SQLiteStore:
                         cluster_labels_json TEXT NOT NULL,
                         aliases_json TEXT NOT NULL,
                         conflict_state TEXT NOT NULL DEFAULT 'none',
-                        description_variants_json TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'active',
                         metadata_json TEXT NOT NULL,
                         PRIMARY KEY (namespace, cluster_id)
@@ -865,7 +862,6 @@ def _cluster_from_row(row: sqlite3.Row) -> EdgeCluster:
         cluster_labels=_from_json(row["cluster_labels_json"], []),
         aliases=_from_json(row["aliases_json"], []),
         conflict_state=row["conflict_state"],
-        description_variants=_from_json(row["description_variants_json"], []),
         status=row["status"],
         metadata=_from_json(row["metadata_json"], {}),
     )

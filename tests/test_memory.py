@@ -162,7 +162,7 @@ def test_default_config_includes_split_config_files():
     assert not hasattr(config, "node_identity")
     assert not hasattr(config, "hyperedges")
     assert config.edge_clusters.enabled
-    assert config.edge_clusters.description_variants_limit == 8
+    assert not hasattr(config.edge_clusters, "description_variants_limit")
     assert config.index.vector == "qdrant"
     assert config.index.vector_store.backend == "qdrant"
     assert config.index.vector_store.collection_name == "c_hypermem_memory"
@@ -253,14 +253,14 @@ def test_memory_indexes_node_local_graph_as_single_vector(tmp_path):
             "Alice prefers morning interviews",
         ],
     ]
-    assert len(vector_store.records) == 13
+    assert len(vector_store.records) == 11
     item_types = [record.payload["item_type"] for record in vector_store.records]
     assert item_types.count("turn_dialogue") == 1
     assert item_types.count("node_content") == 3
     assert item_types.count("node_summary") == 3
     assert item_types.count("node_local_graph") == 2
     assert item_types.count("edge_cluster_canonical") == 2
-    assert item_types.count("edge_cluster_variant") == 2
+    assert item_types.count("edge_cluster_variant") == 0
     record = next(
         item
         for item in vector_store.records
@@ -352,7 +352,6 @@ def test_default_qdrant_vector_stores_use_separate_collections(tmp_path):
         "node_content": "test_collection_node_content",
         "node_summary": "test_collection_node_summary",
         "edge_cluster_canonical": "test_collection_edge_cluster_canonical",
-        "edge_cluster_variant": "test_collection_edge_cluster_variant",
         "turn_dialogue": "test_collection_turn_dialogue",
     }
 
@@ -782,7 +781,7 @@ def test_edge_cluster_builder_reuses_existing_property_cluster(tmp_path):
     assert len(clusters) < len(edges)
 
 
-def test_reused_edge_cluster_appends_description_variants(tmp_path):
+def test_reused_edge_cluster_uses_member_edges_for_descriptions(tmp_path):
     embedding_client = RecordingEmbeddingClient()
     vector_store = RecordingVectorStore()
     extractor = SequenceExtractor(
@@ -820,18 +819,13 @@ def test_reused_edge_cluster_appends_description_variants(tmp_path):
     memory.add_memory("Alice loves coffee.", namespace=namespace)
     clusters = memory.store.list_edge_clusters(namespace)
     state_clusters = [cluster for cluster in clusters if "entity_state" in cluster.cluster_labels]
+    edges = memory.store.list_edges(namespace)
     memory.close()
 
     assert len(state_clusters) == 1
-    variant_texts = [variant.text for variant in state_clusters[0].description_variants]
-    assert variant_texts == ["Alice loves tea", "Alice loves coffee"]
-    indexed_variant_texts = [
-        record.text
-        for record in vector_store.records
-        if record.payload["item_type"] == "edge_cluster_variant"
-    ]
-    assert "Alice loves tea" in indexed_variant_texts
-    assert "Alice loves coffee" in indexed_variant_texts
+    assert not hasattr(state_clusters[0], "description_variants")
+    assert {edge.description for edge in edges if edge.description} >= {"Alice loves tea", "Alice loves coffee"}
+    assert all(record.payload["item_type"] != "edge_cluster_variant" for record in vector_store.records)
 
 
 def test_keep_separate_indexes_new_fact_vectors(tmp_path):
@@ -949,7 +943,7 @@ def test_graph_ripple_adds_edge_coherence_for_multi_hit_edges(tmp_path):
     assert coherent[0]["metadata"]["edge_nodes"]
 
 
-def test_graph_ripple_carries_edge_cluster_description_variants(tmp_path):
+def test_graph_ripple_carries_cluster_edge_descriptions(tmp_path):
     extractor = SequenceExtractor(
         [
             {
@@ -984,12 +978,12 @@ def test_graph_ripple_carries_edge_cluster_description_variants(tmp_path):
     results = memory.search("Alice loves tea", namespace=namespace, top_k=10)
     memory.close()
 
-    variant_texts = {
-        variant["text"]
+    edge_descriptions = {
+        item["description"]
         for result in results
-        for variant in result["metadata"]["cluster_description_variants"]
+        for item in result["metadata"]["cluster_edge_descriptions"]
     }
-    assert {"Alice loves tea", "Alice loves coffee"} <= variant_texts
+    assert {"Alice loves tea", "Alice loves coffee"} <= edge_descriptions
     assert any(result["metadata"]["cluster_ids"] for result in results)
 
 

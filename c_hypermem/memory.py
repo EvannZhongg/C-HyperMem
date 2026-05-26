@@ -22,7 +22,6 @@ from c_hypermem.stores.vector_store import (
     VectorStore,
     VectorIndexItem,
     collect_edge_cluster_canonical_index_items,
-    collect_edge_cluster_variant_index_items,
     collect_hyper_edge_description_index_items,
     collect_node_content_index_items,
     collect_node_local_graph_index_items,
@@ -66,7 +65,6 @@ class Memory:
                         "node_content": self._default_qdrant_vector_store("node_content"),
                         "hyper_edge_description": self._default_qdrant_vector_store("hyper_edge_description"),
                         "edge_cluster_canonical": self._default_qdrant_vector_store("edge_cluster_canonical"),
-                        "edge_cluster_variant": self._default_qdrant_vector_store("edge_cluster_variant"),
                         "turn_dialogue": self._default_qdrant_vector_store("turn_dialogue"),
                     }
                 )
@@ -313,15 +311,6 @@ class Memory:
                 if item.payload.get("status") == "active"
             ],
         )
-        self._index_items(
-            "edge_cluster_variant",
-            [
-                item
-                for item in collect_edge_cluster_variant_index_items(clusters)
-                if item.payload.get("status") == "active"
-            ],
-        )
-
     def _delete_empty_node_local_graph_vectors(self, nodes: list[Any], items: list[VectorIndexItem]) -> None:
         node_local_graph_store = self.vector_stores.get("node_local_graph") or self.vector_store
         if node_local_graph_store is None:
@@ -408,7 +397,6 @@ _VECTOR_INDEX_TYPES = [
     "node_content",
     "hyper_edge_description",
     "edge_cluster_canonical",
-    "edge_cluster_variant",
     "turn_dialogue",
 ]
 

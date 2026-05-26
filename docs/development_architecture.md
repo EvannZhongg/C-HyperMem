@@ -843,11 +843,7 @@ def resolve_entity_node_id(namespace, name, entity_type=None, aliases=None):
     "canonical_description": "Toby's species and pet status.",
     "cluster_labels": ["entity_state", "pet_profile"],
     "aliases": ["toby_species", "toby_pet_profile"],
-    "conflict_state": "none|contains_conflict|needs_review",
-    "description_variants": [
-        {"text": "Toby is a dog.", "source_edge_id": "edge:001"},
-        {"text": "Toby is a cat.", "source_edge_id": "edge:002"}
-    ]
+    "conflict_state": "none|contains_conflict|needs_review"
 }
 ```
 
@@ -1411,7 +1407,6 @@ edge_clusters
   cluster_labels_json
   aliases_json
   conflict_state
-  description_variants_json
   status
   metadata_json
 
@@ -1556,7 +1551,6 @@ edge_clusters:
   enabled: true
   create_from_related_hyperedges: true
   allow_conflict_clusters: true
-  description_variants_limit: 8
   maintenance_prompts:
     edge_merge: maintenance/edge_merge.md
     edge_cluster_merge: maintenance/edge_cluster_merge.md

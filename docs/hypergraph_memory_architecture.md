@@ -268,12 +268,11 @@ EdgeCluster
     "canonical_description": "HyperEdges sharing node: Toby.",
     "cluster_labels": ["shared_node"],
     "shared_node_ids": ["node:toby"],
-    "edge_ids": ["edge:001", "edge:002"],
-    "description_variants": ["Toby is a dog.", "Toby is the user's pet."]
+    "edge_ids": ["edge:001", "edge:002"]
 }
 ```
 
-这里的 `shared_node_ids` 表示 cluster 成立的确定性依据。它不是从 description 相似度推断出的主题，也不是 LLM 在写入抽取阶段输出的关系判断。
+这里的 `shared_node_ids` 表示 cluster 成立的确定性依据。它不是从 description 相似度推断出的主题，也不是 LLM 在写入抽取阶段输出的关系判断。Cluster 不缓存成员 HyperEdge 的 description；检索需要相关描述时从 `edge_ids` 对应的 concrete HyperEdges 动态读取。
 
 局部图锚点 cluster 示例：
 

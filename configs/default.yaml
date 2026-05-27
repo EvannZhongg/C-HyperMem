@@ -54,6 +54,7 @@ retrieval:
   edge_core_top_k: 10
   cluster_periphery_edge_limit: 20
   cluster_periphery_node_limit: 50
+  node_triple_limit: 20
   edge_coherence_alpha: 0.5
   edge_coherence_beta: 2.0
   final_top_k: 10

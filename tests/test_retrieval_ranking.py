@@ -6,7 +6,8 @@ from c_hypermem.config import RetrievalConfig
 from c_hypermem.retrieval.fusion import FusedNode
 from c_hypermem.retrieval.graph_ripple import GraphRippleExpansion, RankedEdge
 from c_hypermem.retrieval.ranking import edge_level_rrf
-from c_hypermem.schema import EdgeCluster, EdgeClusterMember, HyperEdge, MemoryNode
+from c_hypermem.retrieval.recall import Retriever
+from c_hypermem.schema import EdgeCluster, EdgeClusterMember, HyperEdge, LocalNodeGraph, LocalTriple, MemoryNode
 
 
 def test_edge_level_rrf_treats_missing_track_as_zero_and_sums_dual_hits():
@@ -84,14 +85,22 @@ def test_track1_edge_coherence_counts_unique_node_ids():
     assert ranked[0].score_parts["edge_coherence_multiplier"] == pytest.approx(1.5)
 
 
-def test_cluster_periphery_limits_are_configured():
+def test_cluster_periphery_limits_keep_newest_edges_and_nodes_first():
     core = _node("node:core", "Core")
     sibling_a = _node("node:sibling-a", "Sibling A")
-    sibling_b = _node("node:sibling-b", "Sibling B")
-    sibling_c = _node("node:sibling-c", "Sibling C")
+    sibling_b = _node("node:sibling-b", "Sibling B", source_turn_ids=["turn:9"])
+    sibling_c = _node("node:sibling-c", "Sibling C", source_turn_ids=["turn:5"])
     core_edge = _edge("edge:core", [core.node_id])
-    sibling_edge_1 = _edge("edge:sibling-1", [core.node_id, sibling_a.node_id, sibling_b.node_id])
-    sibling_edge_2 = _edge("edge:sibling-2", [core.node_id, sibling_c.node_id])
+    sibling_edge_1 = _edge(
+        "edge:sibling-1",
+        [core.node_id, sibling_a.node_id],
+        source_turn_ids=["turn:1"],
+    )
+    sibling_edge_2 = _edge(
+        "edge:sibling-2",
+        [core.node_id, sibling_b.node_id, sibling_c.node_id],
+        source_turn_ids=["turn:9"],
+    )
     cluster = EdgeCluster(
         cluster_id="cluster:shared",
         namespace="ns",
@@ -124,11 +133,65 @@ def test_cluster_periphery_limits_are_configured():
         ],
     )
 
-    assert [edge["edge_id"] for edge in ranked[0].periphery_edges] == ["edge:sibling-1"]
-    assert [node.node.node_id for node in ranked[0].periphery_nodes] == ["node:sibling-a"]
+    assert [edge["edge_id"] for edge in ranked[0].periphery_edges] == ["edge:sibling-2"]
+    assert [node.node.node_id for node in ranked[0].periphery_nodes] == ["node:sibling-b"]
 
 
-def _node(node_id: str, content: str) -> MemoryNode:
+def test_node_triples_are_prioritized_by_edge_scope_then_recency():
+    node = _node(
+        "node:user",
+        "User",
+        triples=[
+            LocalTriple(
+                triple_id="triple:old-scoped",
+                subject="User",
+                predicate="prefers",
+                object="tea",
+                scope_edge_ids=["edge:core"],
+                qualifiers={"source_turn_ids": ["turn:1"]},
+            ),
+            LocalTriple(
+                triple_id="triple:new-unscoped",
+                subject="User",
+                predicate="prefers",
+                object="coffee",
+                qualifiers={"source_turn_ids": ["turn:9"]},
+            ),
+            LocalTriple(
+                triple_id="triple:middle-edge-turn",
+                subject="User",
+                predicate="lives_in",
+                object="Shanghai",
+                qualifiers={"source_turn_ids": ["turn:5"]},
+            ),
+        ],
+    )
+    edge = _edge("edge:core", [node.node_id], source_turn_ids=["turn:5"])
+    retriever = Retriever(
+        _MemoryStore(nodes=[node], edges=[edge]),
+        RetrievalConfig(node_triple_limit=2),
+    )
+
+    result = retriever._to_result(
+        RankedEdge(edge=edge, score=1.0, nodes=[_fused(node, 1.0)], score_parts={}),
+        analysis_metadata={},
+        current_turn=10,
+    )
+
+    triples = result.metadata["edge_nodes"][0]["triples"]
+    assert [triple["triple_id"] for triple in triples] == [
+        "triple:old-scoped",
+        "triple:middle-edge-turn",
+    ]
+
+
+def _node(
+    node_id: str,
+    content: str,
+    *,
+    source_turn_ids: list[str] | None = None,
+    triples: list[LocalTriple] | None = None,
+) -> MemoryNode:
     return MemoryNode(
         node_id=node_id,
         namespace="ns",
@@ -136,16 +199,19 @@ def _node(node_id: str, content: str) -> MemoryNode:
         normalized_text=content.lower(),
         fingerprint=f"fp:{node_id}",
         content=content,
+        metadata={"source_turn_ids": source_turn_ids or []},
+        local_graph=LocalNodeGraph(triples=triples or []),
     )
 
 
-def _edge(edge_id: str, node_ids: list[str]) -> HyperEdge:
+def _edge(edge_id: str, node_ids: list[str], *, source_turn_ids: list[str] | None = None) -> HyperEdge:
     return HyperEdge(
         edge_id=edge_id,
         namespace="ns",
         edge_fingerprint=f"fp:{edge_id}",
         description=edge_id,
         node_ids=node_ids,
+        metadata={"source_turn_ids": source_turn_ids or []},
     )
 
 

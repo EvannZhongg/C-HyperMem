@@ -259,12 +259,30 @@ class GraphRippleExpansion:
                             cluster_ids=set(),
                         )
                     )
-                    if node_limit is not None and len(items) >= node_limit:
-                        break
-                if node_limit is not None and len(items) >= node_limit:
-                    break
+            items = [
+                item
+                for _, item in sorted(
+                    enumerate(items),
+                    key=lambda pair: (-_node_latest_turn(pair[1].node), pair[0]),
+                )
+            ]
+            if node_limit is not None:
+                items = items[:node_limit]
             result[core_edge_id] = items
         return result
+
+
+def _node_latest_turn(node: MemoryNode) -> int:
+    turns = [
+        *_turn_indexes(node.metadata.get("source_turn_ids")),
+        *_time_payload_turns(node.time.model_dump(mode="json")),
+        *[
+            turn
+            for triple in node.local_graph.triples
+            for turn in _turn_indexes(triple.qualifiers.get("source_turn_ids"))
+        ],
+    ]
+    return max(turns) if turns else -1
 
 
 def _clusters_by_core_edge(
@@ -297,10 +315,11 @@ def _periphery_edges_by_core_edge(
 
     result: dict[str, list[dict[str, object]]] = {}
     for core_edge_id, clusters in clusters_by_core_edge.items():
-        seen: set[tuple[str, str]] = set()
-        payloads: list[dict[str, object]] = []
+        seen_edge_ids: set[str] = set()
+        payloads_by_edge_id: dict[str, dict[str, object]] = {}
+        order_by_edge_id: dict[str, int] = {}
         if edge_limit == 0:
-            result[core_edge_id] = payloads
+            result[core_edge_id] = []
             continue
         for cluster in clusters:
             for related_edge_id in edge_ids_by_cluster.get(cluster.cluster_id, []):
@@ -309,26 +328,80 @@ def _periphery_edges_by_core_edge(
                 edge = edges_by_id.get(related_edge_id)
                 if edge is None or edge.status != "active":
                     continue
-                key = (cluster.cluster_id, edge.edge_id)
-                if key in seen:
+                if edge.edge_id in seen_edge_ids:
                     continue
-                seen.add(key)
-                payloads.append(
-                    {
-                        "cluster_id": cluster.cluster_id,
-                        "edge_id": edge.edge_id,
-                        "description": edge.description,
-                        "node_ids": edge.node_ids,
-                        "time": edge.time.model_dump(mode="json"),
-                        "edge_metadata": edge.metadata,
-                    }
-                )
-                if edge_limit is not None and len(payloads) >= edge_limit:
-                    break
-            if edge_limit is not None and len(payloads) >= edge_limit:
-                break
-        result[core_edge_id] = payloads
+                seen_edge_ids.add(edge.edge_id)
+                order_by_edge_id[edge.edge_id] = len(order_by_edge_id)
+                payloads_by_edge_id[edge.edge_id] = {
+                    "cluster_id": cluster.cluster_id,
+                    "edge_id": edge.edge_id,
+                    "description": edge.description,
+                    "node_ids": edge.node_ids,
+                    "time": edge.time.model_dump(mode="json"),
+                    "edge_metadata": edge.metadata,
+                }
+        payloads = sorted(
+            payloads_by_edge_id.values(),
+            key=lambda payload: (
+                -_payload_latest_turn(payload),
+                order_by_edge_id.get(str(payload.get("edge_id") or ""), 0),
+            ),
+        )
+        result[core_edge_id] = payloads if edge_limit is None else payloads[:edge_limit]
     return result
+
+
+def _payload_latest_turn(payload: dict[str, object]) -> int:
+    edge_metadata = payload.get("edge_metadata")
+    edge_metadata = edge_metadata if isinstance(edge_metadata, dict) else {}
+    turns = [
+        *_turn_indexes(edge_metadata.get("source_turn_ids")),
+        *_time_payload_turns(payload.get("time")),
+    ]
+    return max(turns) if turns else -1
+
+
+def _time_payload_turns(payload: object) -> list[int]:
+    if not isinstance(payload, dict):
+        return []
+    activation = payload.get("activation")
+    if not isinstance(activation, dict):
+        return []
+    turns = []
+    for key in ("updated_turn", "inserted_turn", "created_turn", "last_access_turn"):
+        turn = _turn_index(activation.get(key))
+        if turn is not None:
+            turns.append(turn)
+    return turns
+
+
+def _turn_indexes(value: object) -> list[int]:
+    if isinstance(value, list):
+        raw_values = value
+    elif value in (None, "", [], {}):
+        raw_values = []
+    else:
+        raw_values = [value]
+    indexes: list[int] = []
+    for item in raw_values:
+        turn = _turn_index(item)
+        if turn is not None:
+            indexes.append(turn)
+    return indexes
+
+
+def _turn_index(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.startswith("turn:"):
+        text = text.split(":", 1)[1]
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _cluster_edge_descriptions(

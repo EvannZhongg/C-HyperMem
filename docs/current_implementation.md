@@ -217,12 +217,13 @@ retrieval:
   edge_core_top_k: 10
   cluster_periphery_edge_limit: 20
   cluster_periphery_node_limit: 50
+  node_triple_limit: 20
   edge_coherence_alpha: 0.5
   edge_coherence_beta: 2.0
   final_top_k: 10
 ```
 
-`node_rrf_k` 控制 Track 1 内部 node-level RRF；`graph_seed_top_k` 控制 node RRF 后进入图扩散的 seed nodes 数量，默认不超过 `lexical_top_k + node_content_vector_top_k + node_local_graph_vector_top_k`；`edge_rrf_k` 控制 Track 1 / Track 2 汇合时的 edge-level RRF；`edge_core_top_k` 显式控制 K2 core edge 剪枝规模。`cluster_periphery_edge_limit` 和 `cluster_periphery_node_limit` 控制每条 core edge 能带出的外围 sibling edges 与 periphery nodes；设为 `null` 表示不限制，设为 `0` 表示不附加。`final_top_k` 控制最终返回的核心 HyperEdge 数量，不是 MemoryNode 数量。
+`node_rrf_k` 控制 Track 1 内部 node-level RRF；`graph_seed_top_k` 控制 node RRF 后进入图扩散的 seed nodes 数量，默认不超过 `lexical_top_k + node_content_vector_top_k + node_local_graph_vector_top_k`；`edge_rrf_k` 控制 Track 1 / Track 2 汇合时的 edge-level RRF；`edge_core_top_k` 显式控制 K2 core edge 剪枝规模。`cluster_periphery_edge_limit` 和 `cluster_periphery_node_limit` 控制每条 core edge 能带出的外围 sibling edges 与 periphery nodes；设为 `null` 表示不限制，设为 `0` 表示不附加。periphery sibling edges 会按自身 `source_turn_ids` / activation turn 的最新 turn 优先排序后再截断；periphery nodes 会在已保留 sibling edges 中按 node / triple 最新 turn 优先排序后再截断。`node_triple_limit` 控制每个返回 node 最多输出多少条 active triples；设为 `null` 表示不限制，设为 `0` 表示不输出 triples。node 内 triples 会优先保留当前 edge scope 命中的 triples，其次保留当前 edge source turn 命中的 triples，再按 triple `source_turn_ids` 最新优先排序。`final_top_k` 控制最终返回的核心 HyperEdge 数量，不是 MemoryNode 数量。
 
 Track 1 的 edge coherence 使用乘法器：
 
@@ -254,7 +255,7 @@ SearchResult 当前结构要点：
 - `metadata.edge_vector_hits`：Track 2 的 HyperEdge description 向量命中，不再混入 node 的 `matched_vector_items`。
 - `metadata.score_parts`：包含 `rrf_track1`、`rrf_track2`、`track1_rank`、`track2_rank`、`track1_edge_score`、`track2_vector_score`、`edge_rrf_score` 和 tie-breaker 分数等可解释字段。
 - `metadata.cluster_edge_descriptions`：如果 core edge 属于 EdgeCluster，会从该 cluster 的成员 HyperEdges 动态读取 edge descriptions。
-- `metadata.periphery_edges` / `metadata.periphery_nodes`：只由 Top K2 core edges 所属 cluster 带出的 sibling context，并受 `cluster_periphery_edge_limit` / `cluster_periphery_node_limit` 限制；每条 sibling edge payload 包含 `description/node_ids/time/relative_time/edge_metadata/nodes`，其中 `nodes` 同样携带 active triples 与相对 turn 距离。periphery 不参与 core edge 排名，也不会继续触发新的 cluster 扩散。
+- `metadata.periphery_edges` / `metadata.periphery_nodes`：只由 Top K2 core edges 所属 cluster 带出的 sibling context，并受 `cluster_periphery_edge_limit` / `cluster_periphery_node_limit` 限制；截断前会优先保留更新 turn 更近的 sibling edges 和 periphery nodes。每条 sibling edge payload 包含 `description/node_ids/time/relative_time/edge_metadata/nodes`，其中 `nodes` 同样携带受 `node_triple_limit` 限制并按 edge scope/source turn 优先排序的 active triples 与相对 turn 距离。periphery 不参与 core edge 排名，也不会继续触发新的 cluster 扩散。
 
 当前仍不接入：
 

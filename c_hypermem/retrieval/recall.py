@@ -244,7 +244,9 @@ class Retriever:
                 source_turn_ids=_strings(edge.metadata.get("source_turn_ids")),
             ),
             "edge_metadata": edge.metadata,
-            "edge_nodes": [self._node_metadata(item, current_turn=current_turn) for item in ranked_edge.nodes],
+            "edge_nodes": [
+                self._node_metadata(item, current_turn=current_turn, edge=edge) for item in ranked_edge.nodes
+            ],
         }
         return SearchResult(
             id=edge.edge_id,
@@ -258,7 +260,13 @@ class Retriever:
         channels.update(str(hit["channel"]) for hit in ranked_edge.edge_vector_hits if hit.get("channel"))
         return sorted(channels)
 
-    def _node_metadata(self, fused: FusedNode, *, current_turn: int | None) -> dict[str, object]:
+    def _node_metadata(
+        self,
+        fused: FusedNode,
+        *,
+        current_turn: int | None,
+        edge: HyperEdge | None = None,
+    ) -> dict[str, object]:
         node = fused.node
         source_turn_ids = _strings(node.metadata.get("source_turn_ids"))
         payload: dict[str, object] = {
@@ -280,11 +288,18 @@ class Retriever:
             "node_metadata": node.metadata,
             "triples": [
                 _triple_metadata(triple, current_turn=current_turn)
-                for triple in node.local_graph.triples
-                if triple.status == "active"
+                for triple in _rank_node_triples(
+                    node.local_graph.triples,
+                    edge=edge,
+                    limit=self._node_triple_limit(),
+                )
             ],
         }
         return payload
+
+    def _node_triple_limit(self) -> int | None:
+        configured = self.config.node_triple_limit
+        return None if configured is None else max(0, configured)
 
     def _periphery_edges_metadata(self, ranked_edge: RankedEdge, *, current_turn: int | None) -> list[dict[str, object]]:
         nodes_by_id = {
@@ -304,7 +319,11 @@ class Retriever:
                 source_turn_ids=source_turn_ids,
             )
             payload["nodes"] = [
-                self._node_metadata(nodes_by_id[node_id], current_turn=current_turn)
+                self._node_metadata(
+                    nodes_by_id[node_id],
+                    current_turn=current_turn,
+                    edge=edge_payload_to_edge(payload),
+                )
                 for node_id in node_ids
                 if node_id in nodes_by_id
             ]
@@ -324,7 +343,10 @@ class Retriever:
                     current_turn=current_turn,
                     source_turn_ids=_strings(edge.metadata.get("source_turn_ids")),
                 ),
-                nodes=[self._node_metadata(item, current_turn=current_turn) for item in ranked_edge.nodes],
+                nodes=[
+                    self._node_metadata(item, current_turn=current_turn, edge=edge)
+                    for item in ranked_edge.nodes
+                ],
                 seen_node_ids=seen_node_ids,
             )
         ]
@@ -377,6 +399,58 @@ def _triple_metadata(triple, *, current_turn: int | None) -> dict[str, object]:
         source_turn_ids=_strings(triple.qualifiers.get("source_turn_ids")),
     )
     return payload
+
+
+def _rank_node_triples(triples, *, edge: HyperEdge | None, limit: int | None) -> list[object]:
+    active = [triple for triple in triples if triple.status == "active"]
+    ranked = [
+        triple
+        for _, triple in sorted(
+            enumerate(active),
+            key=lambda pair: (
+                -_triple_edge_priority(pair[1], edge),
+                -_latest_turn(_strings(pair[1].qualifiers.get("source_turn_ids"))),
+                pair[0],
+            ),
+        )
+    ]
+    return ranked if limit is None else ranked[:limit]
+
+
+def _triple_edge_priority(triple, edge: HyperEdge | None) -> int:
+    if edge is None:
+        return 0
+    edge_id = edge.edge_id
+    if edge_id and edge_id in _strings(getattr(triple, "scope_edge_ids", [])):
+        return 2
+    qualifiers = getattr(triple, "qualifiers", {})
+    if isinstance(qualifiers, dict) and edge_id in _strings(qualifiers.get("scope_edge_ids")):
+        return 2
+    edge_turns = set(_strings(edge.metadata.get("source_turn_ids")))
+    if edge_turns and edge_turns.intersection(_strings(qualifiers.get("source_turn_ids"))):
+        return 1
+    return 0
+
+
+def _latest_turn(source_turn_ids: list[str]) -> int:
+    turns = [_turn_index(turn_id) for turn_id in source_turn_ids]
+    concrete = [turn for turn in turns if turn is not None]
+    return max(concrete) if concrete else -1
+
+
+def edge_payload_to_edge(payload: dict[str, object]) -> HyperEdge | None:
+    edge_id = str(payload.get("edge_id") or "")
+    if not edge_id:
+        return None
+    edge_metadata = payload.get("edge_metadata")
+    return HyperEdge(
+        edge_id=edge_id,
+        namespace=str(edge_metadata.get("namespace") if isinstance(edge_metadata, dict) else ""),
+        edge_fingerprint="",
+        description=str(payload.get("description") or ""),
+        node_ids=_strings(payload.get("node_ids")),
+        metadata=edge_metadata if isinstance(edge_metadata, dict) else {},
+    )
 
 
 def _format_edge_memory_context(

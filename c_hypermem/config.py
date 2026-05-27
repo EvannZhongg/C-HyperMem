@@ -138,6 +138,7 @@ class RetrievalConfig(BaseModel):
     edge_core_top_k: int = 10
     cluster_periphery_edge_limit: int | None = 20
     cluster_periphery_node_limit: int | None = 50
+    node_triple_limit: int | None = 20
     edge_coherence_alpha: float = 0.5
     edge_coherence_beta: float = 2.0
     final_top_k: int = 10

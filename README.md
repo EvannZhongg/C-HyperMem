@@ -109,6 +109,8 @@ memory.close()
 - `node_labels.yaml`：定义 `entity`、`fact`、`state`、`preference`、`task`、`event`、`instruction` 等标签的抽取偏好。
 - `maintenance.local_triples.enabled`：控制同 subject/predicate 的 triple 语义维护。若出现同 S/P 多值候选且没有维护 LLM，写入会显式失败，不做规则兜底。
 - `edge_clusters.enabled`：控制是否构建由共享成员节点和 eligible local-triple anchors 形成的确定性 cluster context。
+- `cluster_periphery_edge_limit` / `cluster_periphery_node_limit`：控制每条核心边最多带出的旁路 sibling edges 和 periphery nodes；截断前会优先保留最新 turn 的旁路上下文。
+- `node_triple_limit`：控制每个返回 node 最多输出多少条 active triples；当前 edge scope 或 source turn 命中的 triples 会优先保留，然后按 triple 来源 turn 越新越优先。
 
 ## 自定义抽取器
 

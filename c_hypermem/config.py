@@ -136,12 +136,16 @@ class RetrievalConfig(BaseModel):
     hyper_edge_description_vector_top_k: int = 10
     graph_seed_top_k: int = 70
     edge_core_top_k: int = 10
-    cluster_periphery_edge_limit: int | None = 20
-    cluster_periphery_node_limit: int | None = 50
-    node_triple_limit: int | None = 20
     edge_coherence_alpha: float = 0.5
     edge_coherence_beta: float = 2.0
     final_top_k: int = 10
+
+
+class RecallConfig(BaseModel):
+    cluster_periphery_edge_limit: int | None = 20
+    cluster_periphery_node_limit: int | None = 50
+    node_triple_limit: int | None = 20
+    include_turn_ids_in_context: bool = True
 
 
 class MemoryConfig(BaseModel):
@@ -158,6 +162,7 @@ class MemoryConfig(BaseModel):
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
     index: IndexConfig = Field(default_factory=IndexConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    recall: RecallConfig = Field(default_factory=RecallConfig)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod

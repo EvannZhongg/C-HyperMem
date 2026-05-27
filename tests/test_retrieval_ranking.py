@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from c_hypermem.config import RetrievalConfig
+from c_hypermem.config import RecallConfig, RetrievalConfig
 from c_hypermem.retrieval.fusion import FusedNode
 from c_hypermem.retrieval.graph_ripple import GraphRippleExpansion, RankedEdge
 from c_hypermem.retrieval.ranking import edge_level_rrf
@@ -118,7 +118,8 @@ def test_cluster_periphery_limits_keep_newest_edges_and_nodes_first():
             clusters=[cluster],
             members=members,
         ),
-        RetrievalConfig(cluster_periphery_edge_limit=1, cluster_periphery_node_limit=1),
+        RetrievalConfig(),
+        recall_config=RecallConfig(cluster_periphery_edge_limit=1, cluster_periphery_node_limit=1),
     )
 
     ranked = expansion.attach_cluster_periphery(
@@ -169,7 +170,8 @@ def test_node_triples_are_prioritized_by_edge_scope_then_recency():
     edge = _edge("edge:core", [node.node_id], source_turn_ids=["turn:5"])
     retriever = Retriever(
         _MemoryStore(nodes=[node], edges=[edge]),
-        RetrievalConfig(node_triple_limit=2),
+        RetrievalConfig(),
+        recall_config=RecallConfig(node_triple_limit=2),
     )
 
     result = retriever._to_result(
@@ -183,6 +185,47 @@ def test_node_triples_are_prioritized_by_edge_scope_then_recency():
         "triple:old-scoped",
         "triple:middle-edge-turn",
     ]
+
+
+def test_recall_content_can_include_or_hide_turn_ids():
+    node = _node(
+        "node:user",
+        "User",
+        source_turn_ids=["turn:3"],
+        triples=[
+            LocalTriple(
+                triple_id="triple:pref",
+                subject="User",
+                predicate="prefers",
+                object="coffee",
+                qualifiers={"source_turn_ids": ["turn:3"]},
+            )
+        ],
+    )
+    edge = _edge("edge:core", [node.node_id], source_turn_ids=["turn:3"])
+    store = _MemoryStore(nodes=[node], edges=[edge])
+
+    visible = Retriever(
+        store,
+        RetrievalConfig(),
+        recall_config=RecallConfig(include_turn_ids_in_context=True),
+    )._to_result(
+        RankedEdge(edge=edge, score=1.0, nodes=[_fused(node, 1.0)], score_parts={}),
+        analysis_metadata={},
+        current_turn=10,
+    )
+    hidden = Retriever(
+        store,
+        RetrievalConfig(),
+        recall_config=RecallConfig(include_turn_ids_in_context=False),
+    )._to_result(
+        RankedEdge(edge=edge, score=1.0, nodes=[_fused(node, 1.0)], score_parts={}),
+        analysis_metadata={},
+        current_turn=10,
+    )
+
+    assert "turn_ids=turn:3" in visible.content
+    assert "turn_ids=" not in hidden.content
 
 
 def _node(

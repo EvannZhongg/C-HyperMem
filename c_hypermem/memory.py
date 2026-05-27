@@ -84,6 +84,7 @@ class Memory:
         self.retriever = Retriever(
             self.store,
             config.retrieval,
+            recall_config=config.recall,
             nlp_config=config.nlp,
             query_analysis_llm=query_analysis_llm,
             embedding_client=self.embedding_client,

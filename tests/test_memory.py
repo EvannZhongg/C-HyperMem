@@ -171,9 +171,10 @@ def test_default_config_includes_split_config_files():
     assert config.retrieval.node_content_vector_top_k == 20
     assert config.retrieval.node_local_graph_vector_top_k == 20
     assert config.retrieval.graph_seed_top_k == 70
-    assert config.retrieval.cluster_periphery_edge_limit == 20
-    assert config.retrieval.cluster_periphery_node_limit == 50
-    assert config.retrieval.node_triple_limit == 20
+    assert config.recall.cluster_periphery_edge_limit == 20
+    assert config.recall.cluster_periphery_node_limit == 50
+    assert config.recall.node_triple_limit == 20
+    assert config.recall.include_turn_ids_in_context
     assert config.retrieval.edge_coherence_alpha == 0.5
     assert config.retrieval.edge_coherence_beta == 2.0
     assert config.retrieval.final_top_k == 10

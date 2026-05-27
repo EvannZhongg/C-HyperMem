@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from c_hypermem.config import NLPConfig, RetrievalConfig
+from c_hypermem.config import NLPConfig, RecallConfig, RetrievalConfig
 from c_hypermem.embeddings import EmbeddingClient
 from c_hypermem.llms.base import LLMClient
 from c_hypermem.retrieval.fusion import FusedNode, RankedNodeList, reciprocal_rank_fusion_channels
@@ -30,6 +30,7 @@ class Retriever:
         store: MemoryStore,
         config: RetrievalConfig,
         *,
+        recall_config: RecallConfig | None = None,
         nlp_config: NLPConfig | None = None,
         query_analysis_llm: LLMClient | None = None,
         embedding_client: EmbeddingClient | None = None,
@@ -37,6 +38,7 @@ class Retriever:
     ) -> None:
         self.store = store
         self.config = config
+        self.recall_config = recall_config or RecallConfig()
         self.analyzer = build_query_analyzer(config, nlp_config=nlp_config, llm=query_analysis_llm)
         self.lexical_recall = SQLiteFTSRecall(store, config)
         self.vector_recall = DenseVectorRecall(
@@ -45,7 +47,7 @@ class Retriever:
             embedding_client=embedding_client,
             vector_stores=vector_stores,
         )
-        self.graph_ripple = GraphRippleExpansion(store, config)
+        self.graph_ripple = GraphRippleExpansion(store, config, recall_config=self.recall_config)
 
     def search(
         self,
@@ -298,7 +300,7 @@ class Retriever:
         return payload
 
     def _node_triple_limit(self) -> int | None:
-        configured = self.config.node_triple_limit
+        configured = self.recall_config.node_triple_limit
         return None if configured is None else max(0, configured)
 
     def _periphery_edges_metadata(self, ranked_edge: RankedEdge, *, current_turn: int | None) -> list[dict[str, object]]:
@@ -343,11 +345,13 @@ class Retriever:
                     current_turn=current_turn,
                     source_turn_ids=_strings(edge.metadata.get("source_turn_ids")),
                 ),
+                source_turn_ids=_strings(edge.metadata.get("source_turn_ids")),
                 nodes=[
                     self._node_metadata(item, current_turn=current_turn, edge=edge)
                     for item in ranked_edge.nodes
                 ],
                 seen_node_ids=seen_node_ids,
+                include_turn_ids=self.recall_config.include_turn_ids_in_context,
             )
         ]
         periphery_edges = self._periphery_edges_metadata(ranked_edge, current_turn=current_turn)
@@ -364,8 +368,14 @@ class Retriever:
                     index=memory_index,
                     description=str(edge_payload.get("description") or ""),
                     relative_time=edge_payload.get("relative_time"),
+                    source_turn_ids=_strings(
+                        (edge_payload.get("edge_metadata") or {}).get("source_turn_ids")
+                        if isinstance(edge_payload.get("edge_metadata"), dict)
+                        else edge_payload.get("source_turn_ids")
+                    ),
                     nodes=[node for node in nodes if isinstance(node, dict)] if isinstance(nodes, list) else [],
                     seen_node_ids=seen_node_ids,
+                    include_turn_ids=self.recall_config.include_turn_ids_in_context,
                 )
             )
             memory_index += 1
@@ -458,11 +468,14 @@ def _format_edge_memory_context(
     index: int,
     description: str,
     relative_time: object,
+    source_turn_ids: list[str],
     nodes: list[dict[str, object]],
     seen_node_ids: set[str],
+    include_turn_ids: bool,
 ) -> str:
+    turn_suffix = f"，turn_ids={_turn_ids_label(source_turn_ids)}" if include_turn_ids and source_turn_ids else ""
     lines = [
-        f"memory{index}\uff1a{description}\uff08{_relative_time_label(relative_time)}\uff09",
+        f"memory{index}\uff1a{description}\uff08{_relative_time_label(relative_time)}{turn_suffix}\uff09",
     ]
     for node in nodes:
         node_id = str(node.get("node_id") or "")
@@ -476,15 +489,23 @@ def _format_edge_memory_context(
         for triple in triples:
             if not isinstance(triple, dict):
                 continue
-            lines.append(_format_triple_line(triple))
+            lines.append(_format_triple_line(triple, include_turn_ids=include_turn_ids))
     return "\n".join(lines)
 
 
-def _format_triple_line(triple: dict[str, object]) -> str:
+def _format_triple_line(triple: dict[str, object], *, include_turn_ids: bool) -> str:
     subject = str(triple.get("subject") or "").strip()
     predicate = str(triple.get("predicate") or "").strip()
     obj = str(triple.get("object") or "").strip()
-    return f"{subject} -{predicate}- {obj}"
+    qualifiers = triple.get("qualifiers")
+    qualifiers = qualifiers if isinstance(qualifiers, dict) else {}
+    source_turn_ids = _strings(qualifiers.get("source_turn_ids"))
+    turn_suffix = f" [turn_ids={_turn_ids_label(source_turn_ids)}]" if include_turn_ids and source_turn_ids else ""
+    return f"{subject} -{predicate}- {obj}{turn_suffix}"
+
+
+def _turn_ids_label(source_turn_ids: list[str]) -> str:
+    return ",".join(source_turn_ids)
 
 
 def _relative_time_for_bundle(

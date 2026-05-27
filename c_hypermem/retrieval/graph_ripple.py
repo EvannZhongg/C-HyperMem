@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from c_hypermem.config import RetrievalConfig
+from c_hypermem.config import RecallConfig, RetrievalConfig
 from c_hypermem.retrieval.fusion import FusedNode
 from c_hypermem.schema import EdgeCluster, EdgeClusterMember, HyperEdge, MemoryNode
 from c_hypermem.stores.base import MemoryStore
@@ -35,9 +35,16 @@ class RankedEdge:
 class GraphRippleExpansion:
     """Rank node-derived edges and attach bounded cluster periphery."""
 
-    def __init__(self, store: MemoryStore, config: RetrievalConfig) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        config: RetrievalConfig,
+        *,
+        recall_config: RecallConfig | None = None,
+    ) -> None:
         self.store = store
         self.config = config
+        self.recall_config = recall_config or RecallConfig()
 
     def rank_track1_edges(self, *, namespace: str, node_ranking: list[FusedNode]) -> list[Track1RankedEdge]:
         seeds = node_ranking[: max(0, self.config.graph_seed_top_k)]
@@ -142,11 +149,11 @@ class GraphRippleExpansion:
         return enriched
 
     def _cluster_periphery_edge_limit(self) -> int | None:
-        configured = self.config.cluster_periphery_edge_limit
+        configured = self.recall_config.cluster_periphery_edge_limit
         return None if configured is None else max(0, configured)
 
     def _cluster_periphery_node_limit(self) -> int | None:
-        configured = self.config.cluster_periphery_node_limit
+        configured = self.recall_config.cluster_periphery_node_limit
         return None if configured is None else max(0, configured)
 
     def materialize_edge_nodes(

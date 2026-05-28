@@ -48,6 +48,22 @@ CHYPERMEM_EMBEDDING_API_KEY=your-api-key
 
 LLM 和 embedding 客户端都使用 OpenAI-compatible API。默认 SQLite 主存储路径是 `runs/c_hypermem/memory.sqlite3`，本地嵌入式 Qdrant 向量索引路径是 `runs/c_hypermem/vector_index`。
 
+## 快速自检
+
+配置好 `.env` 后，可以运行 quickstart 脚本做一次最小本地链路测试：
+
+```powershell
+python examples\quickstart.py
+```
+
+该脚本会真实调用 LLM 抽取、embedding、SQLite 写入、Qdrant 向量索引和检索，并输出每次模型调用的日志。全部完成后会打印：
+
+```text
+[quickstart] all checks passed; model, embedding, storage, indexing, and retrieval configs look OK.
+```
+
+脚本结束时会自动删除临时 SQLite 文件 `runs/quickstart.sqlite3`、`-wal` 和 `-shm`。
+
 ## 基础使用
 
 ```python
@@ -88,7 +104,7 @@ memory.close()
 ```python
 {
     "id": "edge:...",
-    "content": "memory1：...（turn_distance=0, current_turn=1，turn_ids=turn:0）\nUser -prefers- morning interviews [turn_ids=turn:0]",
+    "content": "memory1：...，current_turn_id=turn:1, source_turn id=turn:0\nUser -prefers- morning interviews [source_turn id=turn:0]",
     "score": 0.03,
     "metadata": {
         "edge_id": "edge:...",

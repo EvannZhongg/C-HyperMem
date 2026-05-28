@@ -146,6 +146,7 @@ class RecallConfig(BaseModel):
     cluster_periphery_node_limit: int | None = 50
     node_triple_limit: int | None = 20
     include_turn_ids_in_context: bool = True
+    include_real_time_in_context: bool = True
 
 
 class MemoryConfig(BaseModel):

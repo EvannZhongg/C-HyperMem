@@ -203,12 +203,16 @@ def test_recall_content_can_include_or_hide_turn_ids():
         ],
     )
     edge = _edge("edge:core", [node.node_id], source_turn_ids=["turn:3"])
-    store = _MemoryStore(nodes=[node], edges=[edge])
+    store = _MemoryStore(
+        nodes=[node],
+        edges=[edge],
+        turn_inserted_at={"turn:3": "2026-05-28T10:00:00Z"},
+    )
 
     visible = Retriever(
         store,
         RetrievalConfig(),
-        recall_config=RecallConfig(include_turn_ids_in_context=True),
+        recall_config=RecallConfig(include_turn_ids_in_context=True, include_real_time_in_context=True),
     )._to_result(
         RankedEdge(edge=edge, score=1.0, nodes=[_fused(node, 1.0)], score_parts={}),
         analysis_metadata={},
@@ -217,15 +221,53 @@ def test_recall_content_can_include_or_hide_turn_ids():
     hidden = Retriever(
         store,
         RetrievalConfig(),
-        recall_config=RecallConfig(include_turn_ids_in_context=False),
+        recall_config=RecallConfig(include_turn_ids_in_context=False, include_real_time_in_context=False),
     )._to_result(
         RankedEdge(edge=edge, score=1.0, nodes=[_fused(node, 1.0)], score_parts={}),
         analysis_metadata={},
         current_turn=10,
     )
 
-    assert "turn_ids=turn:3" in visible.content
-    assert "turn_ids=" not in hidden.content
+    assert "turn id=turn:3" in visible.content
+    assert "real time=2026-05-28T10:00:00Z" in visible.content
+    assert "turn id=" not in hidden.content
+    assert "real time=" not in hidden.content
+
+
+def test_recall_content_can_hide_real_time_independently_from_turn_id():
+    node = _node(
+        "node:user",
+        "User",
+        source_turn_ids=["turn:3"],
+        triples=[
+            LocalTriple(
+                triple_id="triple:pref",
+                subject="User",
+                predicate="prefers",
+                object="coffee",
+                qualifiers={"source_turn_ids": ["turn:3"]},
+            )
+        ],
+    )
+    edge = _edge("edge:core", [node.node_id], source_turn_ids=["turn:3"])
+    store = _MemoryStore(
+        nodes=[node],
+        edges=[edge],
+        turn_inserted_at={"turn:3": "2026-05-28T10:00:00Z"},
+    )
+
+    result = Retriever(
+        store,
+        RetrievalConfig(),
+        recall_config=RecallConfig(include_turn_ids_in_context=True, include_real_time_in_context=False),
+    )._to_result(
+        RankedEdge(edge=edge, score=1.0, nodes=[_fused(node, 1.0)], score_parts={}),
+        analysis_metadata={},
+        current_turn=10,
+    )
+
+    assert "turn id=turn:3" in result.content
+    assert "real time=" not in result.content
 
 
 def _node(
@@ -278,11 +320,13 @@ class _MemoryStore:
         edges: list[HyperEdge],
         clusters: list[EdgeCluster] | None = None,
         members: list[EdgeClusterMember] | None = None,
+        turn_inserted_at: dict[str, str] | None = None,
     ) -> None:
         self.nodes = {node.node_id: node for node in nodes}
         self.edges = {edge.edge_id: edge for edge in edges}
         self.clusters = {cluster.cluster_id: cluster for cluster in clusters or []}
         self.members = members or []
+        self.turn_inserted_at = turn_inserted_at or {}
 
     def get_incident_edges(self, namespace: str, node_ids: list[str]) -> list[HyperEdge]:
         node_id_set = set(node_ids)
@@ -326,3 +370,10 @@ class _MemoryStore:
             for edge_id in edge_ids
             if edge_id in self.edges and self.edges[edge_id].namespace == namespace
         ]
+
+    def turn_inserted_at_by_id(self, namespace: str, turn_ids: list[str]) -> dict[str, str]:
+        return {
+            turn_id: self.turn_inserted_at[turn_id]
+            for turn_id in dict.fromkeys(turn_ids)
+            if turn_id in self.turn_inserted_at
+        }

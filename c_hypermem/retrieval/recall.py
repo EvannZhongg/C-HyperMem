@@ -334,6 +334,10 @@ class Retriever:
 
     def _edge_content(self, ranked_edge: RankedEdge, *, current_turn: int | None) -> str:
         edge = ranked_edge.edge
+        turn_inserted_at = self.store.turn_inserted_at_by_id(
+            edge.namespace,
+            _ranked_edge_source_turn_ids(ranked_edge),
+        )
         seen_node_ids: set[str] = set()
         seen_edge_ids = {edge.edge_id}
         blocks = [
@@ -352,6 +356,8 @@ class Retriever:
                 ],
                 seen_node_ids=seen_node_ids,
                 include_turn_ids=self.recall_config.include_turn_ids_in_context,
+                include_real_time=self.recall_config.include_real_time_in_context,
+                turn_inserted_at=turn_inserted_at,
             )
         ]
         periphery_edges = self._periphery_edges_metadata(ranked_edge, current_turn=current_turn)
@@ -376,6 +382,8 @@ class Retriever:
                     nodes=[node for node in nodes if isinstance(node, dict)] if isinstance(nodes, list) else [],
                     seen_node_ids=seen_node_ids,
                     include_turn_ids=self.recall_config.include_turn_ids_in_context,
+                    include_real_time=self.recall_config.include_real_time_in_context,
+                    turn_inserted_at=turn_inserted_at,
                 )
             )
             memory_index += 1
@@ -472,8 +480,16 @@ def _format_edge_memory_context(
     nodes: list[dict[str, object]],
     seen_node_ids: set[str],
     include_turn_ids: bool,
+    include_real_time: bool,
+    turn_inserted_at: dict[str, str],
 ) -> str:
-    turn_suffix = f"，turn_ids={_turn_ids_label(source_turn_ids)}" if include_turn_ids and source_turn_ids else ""
+    turn_suffix = _turn_context_suffix(
+        source_turn_ids,
+        bracket="paren",
+        include_turn_ids=include_turn_ids,
+        include_real_time=include_real_time,
+        turn_inserted_at=turn_inserted_at,
+    )
     lines = [
         f"memory{index}\uff1a{description}\uff08{_relative_time_label(relative_time)}{turn_suffix}\uff09",
     ]
@@ -489,19 +505,99 @@ def _format_edge_memory_context(
         for triple in triples:
             if not isinstance(triple, dict):
                 continue
-            lines.append(_format_triple_line(triple, include_turn_ids=include_turn_ids))
+            lines.append(
+                _format_triple_line(
+                    triple,
+                    include_turn_ids=include_turn_ids,
+                    include_real_time=include_real_time,
+                    turn_inserted_at=turn_inserted_at,
+                )
+            )
     return "\n".join(lines)
 
 
-def _format_triple_line(triple: dict[str, object], *, include_turn_ids: bool) -> str:
+def _format_triple_line(
+    triple: dict[str, object],
+    *,
+    include_turn_ids: bool,
+    include_real_time: bool,
+    turn_inserted_at: dict[str, str],
+) -> str:
     subject = str(triple.get("subject") or "").strip()
     predicate = str(triple.get("predicate") or "").strip()
     obj = str(triple.get("object") or "").strip()
     qualifiers = triple.get("qualifiers")
     qualifiers = qualifiers if isinstance(qualifiers, dict) else {}
     source_turn_ids = _strings(qualifiers.get("source_turn_ids"))
-    turn_suffix = f" [turn_ids={_turn_ids_label(source_turn_ids)}]" if include_turn_ids and source_turn_ids else ""
+    turn_suffix = _turn_context_suffix(
+        source_turn_ids,
+        bracket="square",
+        include_turn_ids=include_turn_ids,
+        include_real_time=include_real_time,
+        turn_inserted_at=turn_inserted_at,
+    )
     return f"{subject} -{predicate}- {obj}{turn_suffix}"
+
+
+def _ranked_edge_source_turn_ids(ranked_edge: RankedEdge) -> list[str]:
+    values = [
+        *_strings(ranked_edge.edge.metadata.get("source_turn_ids")),
+        *[
+            turn_id
+            for item in [*ranked_edge.nodes, *ranked_edge.periphery_nodes]
+            for turn_id in _strings(item.node.metadata.get("source_turn_ids"))
+        ],
+        *[
+            turn_id
+            for item in [*ranked_edge.nodes, *ranked_edge.periphery_nodes]
+            for triple in item.node.local_graph.triples
+            for turn_id in _strings(triple.qualifiers.get("source_turn_ids"))
+        ],
+        *[
+            turn_id
+            for edge_payload in ranked_edge.periphery_edges
+            for turn_id in _strings(_edge_payload_source_turn_ids(edge_payload))
+        ],
+    ]
+    return list(dict.fromkeys(values))
+
+
+def _edge_payload_source_turn_ids(edge_payload: dict[str, object]) -> object:
+    edge_metadata = edge_payload.get("edge_metadata")
+    if isinstance(edge_metadata, dict):
+        return edge_metadata.get("source_turn_ids")
+    return edge_payload.get("source_turn_ids")
+
+
+def _turn_context_suffix(
+    source_turn_ids: list[str],
+    *,
+    bracket: str,
+    include_turn_ids: bool,
+    include_real_time: bool,
+    turn_inserted_at: dict[str, str],
+) -> str:
+    if not source_turn_ids:
+        return ""
+    parts = []
+    if include_turn_ids:
+        parts.append(f"turn id={_turn_ids_label(source_turn_ids)}")
+    if include_real_time:
+        real_time_label = _real_time_label(source_turn_ids, turn_inserted_at)
+        if real_time_label:
+            parts.append(f"real time={real_time_label}")
+    if not parts:
+        return ""
+    text = ", ".join(parts)
+    return f"，{text}" if bracket == "paren" else f" [{text}]"
+
+
+def _real_time_label(source_turn_ids: list[str], turn_inserted_at: dict[str, str]) -> str:
+    return ",".join(
+        inserted_at
+        for inserted_at in [turn_inserted_at.get(turn_id) for turn_id in source_turn_ids]
+        if inserted_at
+    )
 
 
 def _turn_ids_label(source_turn_ids: list[str]) -> str:

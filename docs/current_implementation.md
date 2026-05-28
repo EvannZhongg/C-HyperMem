@@ -223,9 +223,10 @@ recall:
   cluster_periphery_node_limit: 50
   node_triple_limit: 20
   include_turn_ids_in_context: true
+  include_real_time_in_context: true
 ```
 
-`node_rrf_k` 控制 Track 1 内部 node-level RRF；`graph_seed_top_k` 控制 node RRF 后进入图扩散的 seed nodes 数量，默认不超过 `lexical_top_k + node_content_vector_top_k + node_local_graph_vector_top_k`；`edge_rrf_k` 控制 Track 1 / Track 2 汇合时的 edge-level RRF；`edge_core_top_k` 显式控制 K2 core edge 剪枝规模。`recall.cluster_periphery_edge_limit` 和 `recall.cluster_periphery_node_limit` 控制每条 core edge 能带出的外围 sibling edges 与 periphery nodes；设为 `null` 表示不限制，设为 `0` 表示不附加。periphery sibling edges 会按自身 `source_turn_ids` / activation turn 的最新 turn 优先排序后再截断；periphery nodes 会在已保留 sibling edges 中按 node / triple 最新 turn 优先排序后再截断。`recall.node_triple_limit` 控制每个返回 node 最多输出多少条 active triples；设为 `null` 表示不限制，设为 `0` 表示不输出 triples。node 内 triples 会优先保留当前 edge scope 命中的 triples，其次保留当前 edge source turn 命中的 triples，再按 triple `source_turn_ids` 最新优先排序。`recall.include_turn_ids_in_context` 控制最终 `content` 是否在 edge 行和 triple 行输出 `turn_ids`；关闭后不影响 metadata 中的 `source_turn_ids`。`final_top_k` 控制最终返回的核心 HyperEdge 数量，不是 MemoryNode 数量。
+`node_rrf_k` 控制 Track 1 内部 node-level RRF；`graph_seed_top_k` 控制 node RRF 后进入图扩散的 seed nodes 数量，默认不超过 `lexical_top_k + node_content_vector_top_k + node_local_graph_vector_top_k`；`edge_rrf_k` 控制 Track 1 / Track 2 汇合时的 edge-level RRF；`edge_core_top_k` 显式控制 K2 core edge 剪枝规模。`recall.cluster_periphery_edge_limit` 和 `recall.cluster_periphery_node_limit` 控制每条 core edge 能带出的外围 sibling edges 与 periphery nodes；设为 `null` 表示不限制，设为 `0` 表示不附加。periphery sibling edges 会按自身 `source_turn_ids` / activation turn 的最新 turn 优先排序后再截断；periphery nodes 会在已保留 sibling edges 中按 node / triple 最新 turn 优先排序后再截断。`recall.node_triple_limit` 控制每个返回 node 最多输出多少条 active triples；设为 `null` 表示不限制，设为 `0` 表示不输出 triples。node 内 triples 会优先保留当前 edge scope 命中的 triples，其次保留当前 edge source turn 命中的 triples，再按 triple `source_turn_ids` 最新优先排序。`recall.include_turn_ids_in_context` 控制最终 `content` 是否在 edge 行和 triple 行输出 `turn id=`；`recall.include_real_time_in_context` 控制是否追加 `real time=`，其值来自 `turns.inserted_at`；关闭任一项都不影响 metadata 中的 `source_turn_ids`。`final_top_k` 控制最终返回的核心 HyperEdge 数量，不是 MemoryNode 数量。
 
 Track 1 的 edge coherence 使用乘法器：
 
@@ -252,7 +253,7 @@ SearchResult 当前结构要点：
 - `id`：`edge_id`。
 - `score`：edge-level RRF 后的最终 edge score。
 - `metadata.edge_metadata`：系统写入的 edge metadata，例如 `source_turn_ids`。
-- `content`：按 core edge、sibling edges 的顺序输出 `memoryN：edge description（turn_distance）`，随后直接拼接该 edge 下未重复 node 的 active triples，格式为 `subject -predicate- object`；当 `recall.include_turn_ids_in_context=true` 时，edge 行和 triple 行会额外标注 `turn_ids`，便于 reader 根据 edge 与 triple 来源 turn 对齐。sibling edge 如果包含已在前面输出过的 node，则该 node 的 triples 不重复拼接。
+- `content`：按 core edge、sibling edges 的顺序输出 `memoryN：edge description（turn_distance）`，随后直接拼接该 edge 下未重复 node 的 active triples，格式为 `subject -predicate- object`；当 `recall.include_turn_ids_in_context=true` 时，edge 行和 triple 行会额外标注 `turn id=`；当 `recall.include_real_time_in_context=true` 时，会额外标注 `real time=`，取值来自来源 turn 的真实插入时间 `turns.inserted_at`。sibling edge 如果包含已在前面输出过的 node，则该 node 的 triples 不重复拼接。
 - `metadata.edge_nodes`：core edge 内的 active member nodes，每个 node 带 `node_id/content/summary/score/channels/score_parts/matched_vector_items/source_turn_ids/triples/time/relative_time/node_metadata`；每条 active triple 也带 `relative_time`。
 - `metadata.edge_vector_hits`：Track 2 的 HyperEdge description 向量命中，不再混入 node 的 `matched_vector_items`。
 - `metadata.score_parts`：包含 `rrf_track1`、`rrf_track2`、`track1_rank`、`track2_rank`、`track1_edge_score`、`track2_vector_score`、`edge_rrf_score` 和 tie-breaker 分数等可解释字段。

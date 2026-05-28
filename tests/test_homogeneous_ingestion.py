@@ -55,6 +55,7 @@ def test_default_config_uses_global_token_counting_config():
     assert config.recall.cluster_periphery_node_limit == 50
     assert config.recall.node_triple_limit == 20
     assert config.recall.include_turn_ids_in_context
+    assert config.recall.include_real_time_in_context
     assert default_raw["ingestion"]["pass_recent_context"] is True
     assert config.ingestion.pass_recent_context
     assert config.edge_clusters.stop_nodes == ["User", "Assistant"]

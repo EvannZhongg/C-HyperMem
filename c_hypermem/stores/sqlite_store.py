@@ -367,6 +367,22 @@ class SQLiteStore:
         ).fetchall()
         return [_message_from_turn_row(row) for row in rows]
 
+    def turn_inserted_at_by_id(self, namespace: str, turn_ids: list[str]) -> dict[str, str]:
+        if not turn_ids:
+            return {}
+        unique_turn_ids = list(dict.fromkeys(turn_ids))
+        placeholders = ",".join("?" for _ in unique_turn_ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT turn_id, MIN(inserted_at) AS inserted_at
+            FROM turns
+            WHERE namespace = ? AND turn_id IN ({placeholders})
+            GROUP BY turn_id
+            """,
+            [namespace, *unique_turn_ids],
+        ).fetchall()
+        return {str(row["turn_id"]): str(row["inserted_at"]) for row in rows if row["inserted_at"]}
+
     def next_turn_index(self, namespace: str) -> int:
         row = self.conn.execute(
             "SELECT COALESCE(MAX(turn_index) + 1, 0) AS next_turn_index FROM turns WHERE namespace = ?",

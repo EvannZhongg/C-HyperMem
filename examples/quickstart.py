@@ -9,28 +9,35 @@ from c_hypermem import Memory
 
 
 class DemoExtractor:
-    def extract(self, messages, context):
+    def extract(self, window, context):
         from c_hypermem.schema import MemoryExtraction
 
         return MemoryExtraction.model_validate(
             {
-                "entities": [{"name": "Alice", "labels": ["person"], "aliases": []}],
-                "events": [
+                "edge_summaries": [
                     {
-                        "summary": "Alice discussed interview scheduling.",
-                        "time": context.metadata.get("date"),
-                        "participants": [{"name": "Alice", "role": "speaker"}],
+                        "ref": "e1",
+                        "description": "Alice discussed her interview scheduling preference.",
                     }
                 ],
-                "assertions": [
+                "nodes": [
                     {
-                        "subject": "Alice",
-                        "predicate": "prefers",
-                        "object": "morning interviews",
-                        "source_ref": "user_input",
+                        "ref": "n1",
+                        "labels": ["entity", "person"],
+                        "canonical_text": "Alice",
+                        "summaries": ["Alice is the person whose interview preference was discussed."],
+                        "triples": [{"subject": "Alice", "predicate": "is_a", "object": "person"}],
+                        "edge_summary_refs": ["e1"],
+                    },
+                    {
+                        "ref": "n2",
+                        "labels": ["preference"],
+                        "canonical_text": "Alice prefers morning interviews.",
+                        "summaries": ["Alice has a scheduling preference for morning interviews."],
+                        "triples": [{"subject": "Alice", "predicate": "prefers", "object": "morning interviews"}],
+                        "edge_summary_refs": ["e1"],
                     }
                 ],
-                "sources": [{"text": "Alice prefers morning interviews.", "ref": "user_input"}],
             }
         )
 

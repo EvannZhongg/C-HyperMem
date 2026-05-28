@@ -57,9 +57,8 @@ def make_cluster_id(namespace: str, cluster_fingerprint: str) -> str:
     return f"cluster:{digest}"
 
 
-def make_member_signature(member_ids: list[str], roles: dict[str, str] | None = None) -> str:
-    role_items = sorted((roles or {}).items())
-    digest = stable_hash(sorted(member_ids), role_items, length=64)
+def make_member_signature(member_ids: list[str]) -> str:
+    digest = stable_hash(sorted(member_ids), length=64)
     return f"sha256:{digest}"
 
 

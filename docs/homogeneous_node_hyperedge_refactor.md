@@ -104,7 +104,6 @@
 
 - `c_hypermem/pipeline/node_builder.py`
 - `c_hypermem/pipeline/local_graph_builder.py`
-- `c_hypermem/pipeline/entity_resolution.py`
 - `c_hypermem/pipeline/graph_utils.py`
 
 需要调整：
@@ -229,7 +228,6 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
 - Edge summary / HyperEdge description 可以考虑增加独立向量索引：
   - 当前已有 EdgeCluster canonical/variant 向量。
   - 重构后可新增 `hyper_edge_description` collection，或先继续只索引 EdgeCluster。
-- `turn_dialogue` payload 里的 `roles` 是 user/assistant 对话角色，不是语义角色；建议改名为 `dialogue_roles`，避免和旧 HyperEdge roles 混淆。
 
 ### 3.8 检索
 
@@ -278,7 +276,9 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
 
 涉及文件：
 
-- `tests/test_memory.py`
+- `tests/test_schema_refactor.py`
+- `tests/test_homogeneous_ingestion.py`
+- `tests/test_retrieval_ranking.py`
 - `examples/quickstart.py`
 - `examples/longmemeval_*.py`
 
@@ -289,12 +289,7 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
   - LLM 不输出 `sources/source_refs/edge_type/relation/polarity/roles`。
   - node.edge_summary_refs 可反向构建 HyperEdge members。
   - MemoryNode / HyperEdge metadata 使用系统注入的 `source_turn_ids` 回溯 user/assistant turns。
-- 重写旧测试中对以下字段的断言：
-  - `polarity`
-  - `roles`
-  - `role_in_edge`
-  - `fact_property_index`
-  - `evidence/state edge`
+- 旧 `tests/test_memory.py` 已删除；不要继续维护旧 `polarity/roles/role_in_edge/fact_property_index/evidence-state edge` 断言，应直接按新结构补测试。
 - 增加同构节点测试：
   - preference node 独立入库。
   - task node 独立入库。
@@ -317,8 +312,8 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
 | 6 | 维护逻辑泛化 | 部分完成 | Node summary 与 LocalTriple 维护已接入；memory node merge/conflict、description-only edge maintenance 仍待补齐。 | `maintenance.py`, maintenance prompts |
 | 7 | 检索适配 | 已完成 | 当前代码已按 Dual-Track Edge-Level RRF 落地：前三路 node recall 形成 Track 1 edge ranking，HED 形成 Track 2 edge ranking，再做 edge-level RRF 与 Top K2 剪枝。 | `retrieval/*.py` |
 | 8 | 配置收敛 | 未开始 | node label policy 与 inferred metadata 配置落地。 | `config.py`, `configs/*.yaml` |
-| 9 | 测试和示例迁移 | 未开始 | 删除旧断言，补齐新结构测试。 | `tests/test_memory.py`, `examples/*.py` |
-| 10 | 旧路径清理 | 未开始 | 移除旧 `entities/events/assertions` 主路径和旧 prompt。 | pipeline/schema/docs |
+| 9 | 测试和示例迁移 | 部分完成 | 新结构测试已补充；`examples/quickstart.py` 已迁移；旧 skip 测试已删除，仍需按新结构继续补齐覆盖。 | `tests/*.py`, `examples/*.py` |
+| 10 | 旧路径清理 | 已完成 | 运行时代码已移除旧 `entities/events/assertions` 主路径、旧 prompt、旧 builder/schema 和旧兼容索引。 | pipeline/schema/prompts |
 
 ## 5. 推荐的落地方式
 
@@ -358,6 +353,10 @@ ExtractedEdgeSummary + member nodes -> HyperEdge(description, node_ids)
 - 已完成：移除当前 EdgeCluster 维护配置入口；EdgeCluster 概念改为共享 `member_node_id` 的 HyperEdge 聚合视图，不包含相似度召回、cluster merge、冲突健康检查或后台维护。
 - 已完成：当前检索代码已适配同构节点与 description-only HyperEdge，不再依赖 edge_type/relation/roles；SQLite FTS、node content vector、node local graph vector 与 HyperEdge description vector 已接入。
 - 已完成：Dual-Track Edge-Level RRF 已落地。FTS / node_content / node_local_graph 的 node RRF 结果转换为 Track 1 edge ranking；HED 作为 Track 2 direct edge ranking；最终在 edge-level RRF 汇合并 Top K2 剪枝后再做 controlled cluster ripple。HED 不再投影到 node-level RRF。
-- 未开始：memory node merge/conflict、旧测试迁移、示例迁移。
+- 已完成：旧主路径清理复核。`c_hypermem/` 运行时代码中不再存在 `ExtractedEntity/ExtractedEvent/ExtractedAssertion/EventParticipant/ExtractedSource` schema，不再存在旧 `entity_resolution.py`、`build_event_node/build_fact_node/build_or_update_entity_node` builder 入口，不再注册旧 fact/property/typed-edge maintenance prompt，不再创建或消费 `fact_property_index`、`edge_type/relation/polarity/roles/role_in_edge` 等旧 DB/检索字段。`source_metadata()` 已移除旧 `source_ref` 参数，`make_member_signature()` 已移除旧 `roles` 参数，只保留当前系统组装需要的来源和成员集合信息。
+- 已完成：`examples/quickstart.py` 已迁移为 `nodes/edge_summaries` 自定义 extractor 示例。
+- 已完成：删除整文件 skip 的旧 assertion-based 测试材料 `tests/test_memory.py`，避免旧 `entities/events/assertions` payload 和旧 builder 断言继续作为测试树遗留。
+- 遗留但不在运行主路径：`docs/development_architecture.md` 是长期/历史蓝图，仍保留旧设计段落；`examples/longmemeval_s_cleaned_smoke_1.json` 是原始对话样本，其中自然语言可能包含 "events" 等普通词，不属于旧抽取接口。
+- 未开始：memory node merge/conflict。
 
 下一步建议继续 **阶段 6：维护逻辑泛化**，补齐统一 MemoryNode merge/conflict 与更完整的 description-only HyperEdge 维护。

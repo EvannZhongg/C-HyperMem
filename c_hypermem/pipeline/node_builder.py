@@ -33,7 +33,6 @@ class NodeBuilder:
             attributes=_node_attributes(extracted),
             metadata=source_metadata(
                 context,
-                source_ref=None,
                 extra={
                     "extraction_ref": extracted.ref,
                     "edge_summary_refs": list(extracted.edge_summary_refs),

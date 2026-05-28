@@ -474,7 +474,7 @@ class GraphMaintenance:
             "labels": node.node_labels,
             "canonical_text": node.canonical_text,
             "content": node.content,
-            "source_ref_count": len(_strings(state.get("summary_source_turn_ids"))),
+            "source_turn_count": len(_strings(state.get("summary_source_turn_ids"))),
             "pending_source_count": len(_strings(state.get("pending_source_turn_ids"))),
         }
         replacements = {
@@ -502,7 +502,7 @@ class GraphMaintenance:
         edge_context = {
             "member_node_ids": edge.node_ids,
             "member_count": len(edge.node_ids),
-            "source_ref_count": len(_strings(state.get("description_source_turn_ids"))),
+            "source_turn_count": len(_strings(state.get("description_source_turn_ids"))),
             "pending_source_count": len(_strings(state.get("pending_source_turn_ids"))),
         }
         replacements = {

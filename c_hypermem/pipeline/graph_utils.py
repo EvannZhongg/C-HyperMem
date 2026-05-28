@@ -16,12 +16,10 @@ from c_hypermem.utils.text import compact_key, normalize_text
 def source_metadata(
     context: AssemblyContext,
     *,
-    source_ref: str | None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = dict(extra or {})
     metadata.update({
-        "source_ref": source_ref,
         "source_session_id": context.metadata.get("session_id") or context.metadata.get("conversation_id"),
         "date": context.metadata.get("date"),
         "source_turn_ids": context.metadata.get("turn_ids", []),

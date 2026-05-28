@@ -41,7 +41,7 @@
 
 Schema 层当前会拒绝旧抽取 shape，以及 LLM 输出的 `sources/source_refs/source_ref/edge_type/relation/polarity/roles/time` 等不应由模型生成的来源、typed-edge 或构建时间字段。系统 ID 由 `utils/ids.py` 生成，LLM 不生成 `node_id/edge_id/triple_id`。
 
-注意：当前已完成阶段 1-5 的主路径，并已开始阶段 6 的 Node summary 和 LocalTriple 维护。旧测试迁移和示例迁移仍会在后续阶段继续清理。
+注意：当前已完成阶段 1-5 的主路径，并已开始阶段 6 的 Node summary 和 LocalTriple 维护。旧 assertion-based skip 测试已删除，后续测试应按 `nodes/edge_summaries` 与同构节点结构继续补齐覆盖。
 
 ## 4. 写入 Pipeline
 

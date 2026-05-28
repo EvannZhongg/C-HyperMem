@@ -57,7 +57,6 @@ class BasicHyperEdgeBuilder:
             weights={node_id: 1.0 for node_id in node_ids},
             metadata=source_metadata(
                 context,
-                source_ref=None,
                 extra={
                     "edge_summary_refs": [edge_summary.ref],
                     **dict(edge_summary.metadata),

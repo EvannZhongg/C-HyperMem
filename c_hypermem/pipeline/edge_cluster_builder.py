@@ -220,7 +220,7 @@ class BasicEdgeClusterBuilder:
                 cluster_labels=labels,
                 aliases=[compact_key(key.anchor_value)],
                 conflict_state="none",
-                metadata=source_metadata(context, source_ref=None, extra=extra),
+                metadata=source_metadata(context, extra=extra),
             )
             created_or_changed = True
         else:
@@ -232,7 +232,7 @@ class BasicEdgeClusterBuilder:
             cluster.aliases = list(dict.fromkeys([*cluster.aliases, compact_key(key.anchor_value)]))
             cluster.metadata = _merge_anchor_metadata(
                 cluster.metadata,
-                source_metadata(context, source_ref=None, extra=extra),
+                source_metadata(context, extra=extra),
             )
             created_or_changed = (
                 before_metadata != cluster.metadata

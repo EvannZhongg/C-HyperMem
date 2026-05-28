@@ -160,7 +160,10 @@ def test_search_context_includes_triples_sibling_edges_and_relative_turns(tmp_pa
     assert "Triples:" not in result["content"]
     assert "Alice -prefers- morning interviews" in result["content"]
     assert result["content"].count("Alice -prefers- morning interviews") == 1
-    assert "turn_distance=1" in result["content"]
+    assert "current_turn_id=turn:1" in result["content"]
+    assert "source_turn id=turn:0" in result["content"]
+    assert "turn_distance=" not in result["content"]
+    assert "current_turn=" not in result["content"]
 
     metadata = result["metadata"]
     assert metadata["relative_time"]["turn_distance"] == 1

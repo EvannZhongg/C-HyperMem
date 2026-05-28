@@ -228,10 +228,13 @@ def test_recall_content_can_include_or_hide_turn_ids():
         current_turn=10,
     )
 
-    assert "turn id=turn:3" in visible.content
+    assert "current_turn_id=turn:10" in visible.content
+    assert "source_turn id=turn:3" in visible.content
     assert "real time=2026-05-28T10:00:00Z" in visible.content
-    assert "turn id=" not in hidden.content
+    assert "current_turn_id=turn:10" in hidden.content
+    assert "source_turn id=" not in hidden.content
     assert "real time=" not in hidden.content
+    assert "turn_distance=" not in visible.content
 
 
 def test_recall_content_can_hide_real_time_independently_from_turn_id():
@@ -266,7 +269,8 @@ def test_recall_content_can_hide_real_time_independently_from_turn_id():
         current_turn=10,
     )
 
-    assert "turn id=turn:3" in result.content
+    assert "current_turn_id=turn:10" in result.content
+    assert "source_turn id=turn:3" in result.content
     assert "real time=" not in result.content
 
 

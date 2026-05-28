@@ -486,12 +486,13 @@ def _format_edge_memory_context(
     turn_suffix = _turn_context_suffix(
         source_turn_ids,
         bracket="paren",
+        current_turn=_current_turn_from_relative_time(relative_time),
         include_turn_ids=include_turn_ids,
         include_real_time=include_real_time,
         turn_inserted_at=turn_inserted_at,
     )
     lines = [
-        f"memory{index}\uff1a{description}\uff08{_relative_time_label(relative_time)}{turn_suffix}\uff09",
+        f"memory{index}\uff1a{description}{turn_suffix}",
     ]
     for node in nodes:
         node_id = str(node.get("node_id") or "")
@@ -532,6 +533,7 @@ def _format_triple_line(
     turn_suffix = _turn_context_suffix(
         source_turn_ids,
         bracket="square",
+        current_turn=None,
         include_turn_ids=include_turn_ids,
         include_real_time=include_real_time,
         turn_inserted_at=turn_inserted_at,
@@ -573,15 +575,18 @@ def _turn_context_suffix(
     source_turn_ids: list[str],
     *,
     bracket: str,
+    current_turn: int | None,
     include_turn_ids: bool,
     include_real_time: bool,
     turn_inserted_at: dict[str, str],
 ) -> str:
-    if not source_turn_ids:
+    if current_turn is None and not source_turn_ids:
         return ""
     parts = []
+    if current_turn is not None:
+        parts.append(f"current_turn_id={_turn_id_label(current_turn)}")
     if include_turn_ids:
-        parts.append(f"turn id={_turn_ids_label(source_turn_ids)}")
+        parts.append(f"source_turn id={_turn_ids_label(source_turn_ids)}")
     if include_real_time:
         real_time_label = _real_time_label(source_turn_ids, turn_inserted_at)
         if real_time_label:
@@ -602,6 +607,16 @@ def _real_time_label(source_turn_ids: list[str], turn_inserted_at: dict[str, str
 
 def _turn_ids_label(source_turn_ids: list[str]) -> str:
     return ",".join(source_turn_ids)
+
+
+def _turn_id_label(turn_index: int) -> str:
+    return f"turn:{turn_index}"
+
+
+def _current_turn_from_relative_time(relative_time: object) -> int | None:
+    if not isinstance(relative_time, dict):
+        return None
+    return _int_or_none(relative_time.get("current_turn"))
 
 
 def _relative_time_for_bundle(
@@ -692,16 +707,6 @@ def _relative_time_for_activation(
         "source_turn_distance": source_turn_distance,
         "source_turn_distances": source_distances,
     }
-
-
-def _relative_time_label(relative_time: object) -> str:
-    if not isinstance(relative_time, dict):
-        return "turn_distance=unknown"
-    turn_distance = relative_time.get("turn_distance")
-    current_turn = relative_time.get("current_turn")
-    if turn_distance is None:
-        return f"turn_distance=unknown, current_turn={current_turn}"
-    return f"turn_distance={turn_distance}, current_turn={current_turn}"
 
 
 def _source_turn_distances(source_turn_ids: list[str], current_turn: int | None) -> list[dict[str, object]]:
